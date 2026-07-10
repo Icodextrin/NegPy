@@ -18,12 +18,12 @@ from negpy.features.exposure.normalization import (
     measure_clip_fractions,
     measure_neutral_axis_from_log,
     measure_shadow_refs_from_log,
-    resolve_crosstalk_matrix,
-    unmix_log_image,
     measure_textural_range_from_log,
     prefilter_log_grid,
     resolve_analysis_region,
     resolve_bounds_detailed,
+    resolve_crosstalk_matrix,
+    unmix_log_image,
 )
 from negpy.features.geometry.logic import (
     AUTOCROP_DETECT_RES,
@@ -192,6 +192,11 @@ class GPUEngine:
         self._sampler: Optional[Any] = None
         self._tex_cache: Dict[Tuple[int, int, int, str], GPUTexture] = {}
 
+        # Display output textures live outside _tex_cache so cleanup()/next-render reuse can't
+        # free or overwrite the frame the main-thread canvas is presenting.
+        self._display_ring: list[Optional[GPUTexture]] = [None, None, None]
+        self._display_idx: int = 0
+
         self._uniform_names = [
             "geometry",
             "normalization",
@@ -291,6 +296,24 @@ class GPUEngine:
         if key not in self._tex_cache:
             self._tex_cache[key] = GPUTexture(w, h, usage=usage)
         return self._tex_cache[key]
+
+    def _get_display_texture(self, w: int, h: int, usage: int) -> GPUTexture:
+        """Rotating display-output texture, deliberately kept out of _tex_cache.
+
+        The returned texture is handed to the main-thread canvas, which keeps
+        sampling it until the next frame arrives. Pooling it would let the next
+        render overwrite it, or cleanup() destroy it, while the canvas is still
+        reading — a cross-thread use-after-free (issue #434). Rotating through a
+        small ring gives the canvas a stable frame while the worker renders into a
+        different slot; the engine holds strong refs so GC can't free a live slot.
+        """
+        idx = self._display_idx
+        slot = self._display_ring[idx]
+        if slot is None or slot.width != w or slot.height != h:
+            slot = GPUTexture(w, h, usage=usage)
+            self._display_ring[idx] = slot
+        self._display_idx = (idx + 1) % len(self._display_ring)
+        return slot
 
     def _init_resources(self) -> None:
         """Initializes hardware pipelines and persistent buffers."""
@@ -888,11 +911,10 @@ class GPUEngine:
 
         # Output transform: scene-linear -> display-encoded, so every consumer
         # (readback, display LUT) reads encoded data.
-        tex_output = self._get_intermediate_texture(
+        tex_output = self._get_display_texture(
             tex_final.width,
             tex_final.height,
             wgpu.TextureUsage.STORAGE_BINDING | wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_SRC,
-            "output_encoded",
         )
         self._dispatch_pass(enc, "output_encode", [(0, tex_final.view), (1, tex_output.view)], tex_final.width, tex_final.height)
         tex_final = tex_output
@@ -1776,6 +1798,11 @@ class GPUEngine:
     def destroy_all(self) -> None:
         """Full resource teardown."""
         self.cleanup()
+        for i, tex in enumerate(self._display_ring):
+            if tex is not None:
+                tex.destroy()
+            self._display_ring[i] = None
+        self._display_idx = 0
         if self._metrics_staging is not None:
             self._metrics_staging.destroy()
             self._metrics_staging = None
