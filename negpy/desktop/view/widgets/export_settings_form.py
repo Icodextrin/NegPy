@@ -23,6 +23,7 @@ from negpy.desktop.view.styles.templates import hint_label, labeled_toggle_qss, 
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.domain.models import (
+    EXPORT_COLOR_SPACES,
     JXL_TAGGABLE_SPACES,
     AspectRatio,
     ColorSpace,
@@ -246,7 +247,7 @@ class ExportSettingsForm(QWidget):
         cs_row = QHBoxLayout()
         cs_row.addWidget(self._row_label("Colour space"))
         self.color_space_combo = QComboBox()
-        self.color_space_combo.addItems([cs.value for cs in ColorSpace])
+        self.color_space_combo.addItems(EXPORT_COLOR_SPACES)
         constrain_combo(self.color_space_combo)
         self.color_space_combo.currentTextChanged.connect(self._on_changed)
         self.color_space_combo.currentTextChanged.connect(self._refresh_jxl_warning)
