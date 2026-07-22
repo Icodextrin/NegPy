@@ -77,6 +77,16 @@ def _use_half_size_decode(raw: Any, linear_raw: bool) -> bool:
     return not isinstance(raw, NonStandardFileWrapper) and not (is_xtrans(raw) and linear_raw)
 
 
+def _downsample_to_long_edge(buf: np.ndarray, long_px: int) -> np.ndarray:
+    """Shrink so the long edge is at most long_px; never upscales."""
+    h, w = buf.shape[:2]
+    long_edge = max(h, w)
+    if long_px <= 0 or long_edge <= long_px:
+        return buf
+    s = long_px / long_edge
+    return cv2.resize(buf, (max(1, int(round(w * s))), max(1, int(round(h * s)))), interpolation=cv2.INTER_AREA)
+
+
 def _detection_downsample(buf: np.ndarray) -> np.ndarray:
     """Dust detection always runs at preview scale so preview and export produce
     the identical region set (WYSIWYG) and full-res export detection stays cheap."""
@@ -798,6 +808,11 @@ class ImageProcessor:
 
         Mirrors the export render path but at small resolution and in display space,
         so a contact-sheet tile matches the on-canvas look. Returns None on failure.
+
+        The result is downsampled to target_long_px: the caller holds every tile in
+        memory at once, so returning full-res here made peak cost scale with
+        frames x full resolution (a 24MP roll cost ~72MB per tile instead of ~3MB)
+        until allocations failed and tiles were silently dropped.
         """
         try:
             from negpy.infrastructure.display.color_mgmt import apply_display_transform
@@ -844,6 +859,9 @@ class ImageProcessor:
             if isinstance(buffer, np.ndarray) and buffer.ndim == 3 and buffer.shape[2] == 4:
                 buffer = buffer[:, :, :3]
             buffer = apply_display_transform(buffer, working_color_space)
+            # Downsample after the display transform, matching where the sheet
+            # compositor resamples, so the tile looks identical — just smaller.
+            buffer = _downsample_to_long_edge(buffer, target_long_px)
             return float_to_uint8(buffer)
         except Exception as e:
             logger.error(f"Contact-sheet tile render failed for {file_path}: {e}")

@@ -243,6 +243,10 @@ class ExportWorker(QObject):
                 if tile is not None:
                     tiles.append(tile)
                     labels.append(task.file_info["name"])
+                else:
+                    # A dropped tile silently shrinks the sheet; report it so the
+                    # run doesn't look like a clean success with frames missing.
+                    self.error.emit(f"{name}: could not be rendered for the contact sheet")
 
             sheets = ContactSheetService.build_sheets(
                 tiles,
