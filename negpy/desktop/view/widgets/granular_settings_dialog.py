@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QRadioButton,
     QScrollArea,
@@ -33,14 +34,25 @@ class GranularSettingsDialog(QDialog):
         show_bounds: bool = False,
         sel_count: int = 0,
         roll_count: int = 0,
+        ask_name: bool = False,
+        exclude_sections: frozenset[str] = frozenset(),
+        show_current: bool = False,
+        show_apply_mode: bool = False,
     ):
         super().__init__(parent)
         self._checks: list[tuple[QCheckBox, SettingRow]] = []
         self._bounds_luma: QCheckBox | None = None
         self._bounds_colour: QCheckBox | None = None
-        self._scope = "selection" if sel_count > 0 else "roll"
+        self._name_edit: QLineEdit | None = None
+        if show_current:
+            self._scope = "current"
+        else:
+            self._scope = "selection" if sel_count > 0 else "roll"
 
-        self.setWindowTitle("Paste Settings" if not show_scope else "Apply Settings")
+        if ask_name:
+            self.setWindowTitle("Save Preset")
+        else:
+            self.setWindowTitle("Paste Settings" if not show_scope else "Apply Settings")
         self.setStyleSheet(f"QDialog {{ background: {THEME.bg_dark}; }}")
         self.resize(420, 620)
 
@@ -52,26 +64,55 @@ class GranularSettingsDialog(QDialog):
         header.setStyleSheet(f"color: {THEME.text_primary}; font-weight: bold;")
         root.addWidget(header)
 
+        if ask_name:
+            self._name_edit = QLineEdit()
+            self._name_edit.setPlaceholderText("Preset name")
+            self._name_edit.textChanged.connect(self._update_apply_enabled)
+            root.addWidget(self._name_edit)
         if show_scope:
-            root.addLayout(self._build_scope_row(sel_count, roll_count))
+            root.addLayout(self._build_scope_row(sel_count, roll_count, show_current))
+        if show_apply_mode:
+            root.addLayout(self._build_mode_row())
         root.addLayout(self._build_checks_row())
-        root.addWidget(self._build_sections(source_cfg, show_bounds), 1)
-        root.addLayout(self._build_footer())
+        root.addWidget(self._build_sections(source_cfg, show_bounds, exclude_sections), 1)
+        root.addLayout(self._build_footer(ask_name))
 
         self._update_apply_enabled()
 
-    def _build_scope_row(self, sel_count: int, roll_count: int) -> QHBoxLayout:
+    def _build_scope_row(self, sel_count: int, roll_count: int, show_current: bool = False) -> QHBoxLayout:
         row = QHBoxLayout()
         self.scope_group = QButtonGroup(self)
+        if show_current:
+            self.current_radio = QRadioButton("Current frame")
+            self.scope_group.addButton(self.current_radio)
+            row.addWidget(self.current_radio)
         self.sel_radio = QRadioButton(f"Selected frames ({sel_count})")
         self.sel_radio.setEnabled(sel_count > 0)
         self.roll_radio = QRadioButton(f"Whole roll ({roll_count})")
         self.roll_radio.setEnabled(roll_count > 0)
         self.scope_group.addButton(self.sel_radio)
         self.scope_group.addButton(self.roll_radio)
-        (self.sel_radio if sel_count > 0 else self.roll_radio).setChecked(True)
+        if show_current:
+            self.current_radio.setChecked(True)
+        else:
+            (self.sel_radio if sel_count > 0 else self.roll_radio).setChecked(True)
         row.addWidget(self.sel_radio)
         row.addWidget(self.roll_radio)
+        row.addStretch()
+        return row
+
+    def _build_mode_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        self.mode_group = QButtonGroup(self)
+        self.overlay_radio = QRadioButton("Apply on top")
+        self.overlay_radio.setToolTip("Only the ticked settings change; the rest of each frame's edit stays")
+        self.replace_radio = QRadioButton("Replace look")
+        self.replace_radio.setToolTip("Reset look settings to defaults first — crop, rotation, metadata, export and retouch marks stay")
+        self.mode_group.addButton(self.overlay_radio)
+        self.mode_group.addButton(self.replace_radio)
+        self.overlay_radio.setChecked(True)
+        row.addWidget(self.overlay_radio)
+        row.addWidget(self.replace_radio)
         row.addStretch()
         return row
 
@@ -86,7 +127,7 @@ class GranularSettingsDialog(QDialog):
         row.addStretch()
         return row
 
-    def _build_sections(self, source_cfg, show_bounds: bool) -> QScrollArea:
+    def _build_sections(self, source_cfg, show_bounds: bool, exclude_sections: frozenset[str] = frozenset()) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -96,6 +137,8 @@ class GranularSettingsDialog(QDialog):
         col.setSpacing(THEME.space_sm)
 
         for title, rows in edited_sections(source_cfg):
+            if title in exclude_sections:
+                continue
             section = CollapsibleSection(title, expanded=True)
             section.set_modified(len(rows))
             section.set_content(self._build_rows(rows))
@@ -138,12 +181,12 @@ class GranularSettingsDialog(QDialog):
             col.addWidget(box)
         return body
 
-    def _build_footer(self) -> QHBoxLayout:
+    def _build_footer(self, ask_name: bool = False) -> QHBoxLayout:
         row = QHBoxLayout()
         row.addStretch()
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        self.apply_btn = QPushButton("Apply")
+        self.apply_btn = QPushButton("Save" if ask_name else "Apply")
         self.apply_btn.clicked.connect(self._on_apply)
         row.addWidget(cancel_btn)
         row.addWidget(self.apply_btn)
@@ -159,15 +202,28 @@ class GranularSettingsDialog(QDialog):
             box.setChecked(checked)
 
     def _update_apply_enabled(self) -> None:
-        self.apply_btn.setEnabled(any(box.isChecked() for box in self._all_boxes()))
+        enabled = any(box.isChecked() for box in self._all_boxes())
+        if self._name_edit is not None:
+            enabled = enabled and bool(self._name_edit.text().strip())
+        self.apply_btn.setEnabled(enabled)
 
     def _on_apply(self) -> None:
         if hasattr(self, "sel_radio"):
-            self._scope = "selection" if self.sel_radio.isChecked() else "roll"
+            if getattr(self, "current_radio", None) is not None and self.current_radio.isChecked():
+                self._scope = "current"
+            else:
+                self._scope = "selection" if self.sel_radio.isChecked() else "roll"
         self.accept()
 
     def selected(self) -> list[SettingRow]:
         return [row for box, row in self._checks if box.isChecked()]
+
+    def name(self) -> str:
+        return self._name_edit.text().strip() if self._name_edit is not None else ""
+
+    def set_name(self, value: str) -> None:
+        if self._name_edit is not None:
+            self._name_edit.setText(value)
 
     def bounds_flags(self) -> tuple[bool, bool]:
         return (
@@ -177,6 +233,11 @@ class GranularSettingsDialog(QDialog):
 
     def scope(self) -> str:
         return self._scope
+
+    def apply_mode(self) -> str:
+        if getattr(self, "replace_radio", None) is not None and self.replace_radio.isChecked():
+            return "replace"
+        return "overlay"
 
 
 def open_paste_dialog(parent, controller) -> None:
