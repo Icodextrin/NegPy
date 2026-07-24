@@ -2,10 +2,12 @@
 
 ## 0.42.0
 
-- New: **Selectable scanner backend** — a Backend dropdown in the Film Scanner panel picks the scan transport; SANE is the only one today, and more slot in through a registry.
-- Change: **Presets UX pass** — presets now live in a visible list (tooltips show contents), and Save, Edit and Apply all use the per-setting picker from copy/paste: a preset stores exactly the settings you tick, and applying shows them again with a choice of current frame, selection or whole roll, laid over existing edits or replacing the look. Per-frame crop, rotation, metadata, dust and masks are never touched; existing preset files keep working.
+- New: **Presets UX pass** — presets now live in a visible list (tooltips show contents), and Save, Edit and Apply all use the per-setting picker from copy/paste: a preset stores exactly the settings you tick, and applying shows them again with a choice of current frame, selection or whole roll, laid over existing edits or replacing the look. Per-frame crop, rotation, metadata, dust and masks are never touched; existing preset files keep working.
+- New: **Sensor Calibration** — a 3×3 unmix profile, calibrated from three bare-light R/G/B exposures, corrects the channel bleed narrowband LED scans pick up through the sensor's colour filters, applied to the linear capture before inversion. Profiles are saved per setup, default to None, and stay off for RGB-triplet composites (their channels are already separate exposures).
+- New: **Selectable scanner backend groundwork** — a Backend dropdown in the Film Scanner panel picks the scan transport; SANE is the only one today, and more slot in through a registry.
 - Fix: **Tool clicks no longer offset by the print border** — heal spots, dodge & burn masks and white-balance picks land where clicked when a border or paper size pads the preview; the crop tool's preview is no longer padded either.
 - Fix: **IR sidecars matched case-insensitively** — infrared files named `_ir.tiff` (not just `_IR.tif`) are now detected, so IR dust removal works on scans from more tools.
+- Fix: **Camera scan flags a dropped live view** — the scan and calibration windows now report a lost live-view session instead of stalling, and an invalid output folder is rejected before capture starts. @light-sntchr
 
 ## 0.41.0
 
