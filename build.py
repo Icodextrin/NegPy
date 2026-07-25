@@ -29,6 +29,7 @@ def get_macos_target_arch():
     """Return the macOS target architecture for packaging."""
     return os.environ.get("NEGPY_MACOS_ARCH", platform.machine())
 
+
 # Basic PyInstaller arguments
 params = [
     ENTRY_POINT,
