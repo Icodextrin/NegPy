@@ -94,7 +94,7 @@ Save and recall a complete edit (the full workspace) by name.
 The foundation of every edit: film type, how the scan is decoded, and how the negative is normalized into a positive.
 
 *   **Mode**: `C41` (colour negative), `B&W`, or `E-6` (slide/reversal). Changes the core conversion math and re-runs the pipeline from scratch. The wand button beside it **auto-detects** the mode when a file loads.
-*   **Linear RAW**: off (default) decodes RAW with the camera's as-shot white balance for a balanced starting point; on decodes with neutral multipliers for completely raw data. Toggling reloads the file.
+*   **Linear RAW**: (default on) decodes with neutral multipliers for completely raw data. When toggled off decodes RAW with the camera's as-shot white balance - **pick what works better for your scanning setup!** Toggling reloads the file.
 *   **Narrowband**: corrects the oversaturation typical of narrowband (RGB-LED trichrome) scans using a bundled input profile. Leave off for ordinary broadband scans. An explicit Input ICC in Export overrides it.
 *   **Lock Bounds**: freezes the analyzed normalization bounds for this frame, so cropping or moving sliders no longer re-analyzes it. Lock in once you're happy with the bounds.
 
