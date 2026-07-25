@@ -98,6 +98,8 @@ Since this is a free hobby project, I don't pay Apple or Microsoft ransom for th
 2.  Open Terminal and run: `xattr -cr /Applications/NegPy.app` (this gets rid of the warning).
 3.  Launch it.
 
+If you build the DMG yourself on macOS, set `NEGPY_MACOS_ARCH=x86_64` for an Intel build or `NEGPY_MACOS_ARCH=arm64` for Apple Silicon.
+
 **Scanner support** requires SANE via [Homebrew](https://brew.sh/):
 ```
 brew install sane-backends

@@ -118,3 +118,10 @@ To build the standalone application for your current OS:
 make build
 ```
 This will trigger the Python backend build via PyInstaller.
+
+On macOS, you can choose the target architecture for the DMG build with `NEGPY_MACOS_ARCH`.
+For an Intel build from a compatible macOS environment, run:
+
+```bash
+NEGPY_MACOS_ARCH=x86_64 make build
+```

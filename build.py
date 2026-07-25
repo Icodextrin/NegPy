@@ -24,6 +24,11 @@ is_windows = system == "Windows"
 is_macos = system == "Darwin"
 is_linux = system == "Linux"
 
+
+def get_macos_target_arch():
+    """Return the macOS target architecture for packaging."""
+    return os.environ.get("NEGPY_MACOS_ARCH", platform.machine())
+
 # Basic PyInstaller arguments
 params = [
     ENTRY_POINT,
@@ -118,6 +123,9 @@ elif is_macos:
         params.append("--icon=media/icons/icon.icns")
     elif os.path.exists("media/icons/icon.png"):
         params.append("--icon=media/icons/icon.png")
+
+    macos_target_arch = get_macos_target_arch()
+    params.append(f"--target-arch={macos_target_arch}")
 
 
 def package_linux():
@@ -305,7 +313,7 @@ def package_macos():
     """Package the built application into a DMG with Applications symlink."""
     print(f"Packaging for macOS (DMG) version {VERSION}...")
     app_path = os.path.join("dist", f"{APP_NAME}.app")
-    dmg_name = f"{APP_NAME}-{VERSION}-macOS-{platform.machine()}.dmg"
+    dmg_name = f"{APP_NAME}-{VERSION}-macOS-{get_macos_target_arch()}.dmg"
     dmg_path = os.path.join("dist", dmg_name)
     temp_dmg_dir = os.path.join("dist", "dmg_temp")
 
