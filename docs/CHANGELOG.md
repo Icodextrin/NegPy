@@ -1,5 +1,13 @@
 # Change Log
 
+## 0.43.1
+
+- Fix: **Slider edits always reach the database** — a drag landing on the value another image last committed no longer skips saving; most visible on Crosstalk Separation, where the edit would revert on the next visit to the frame. @seanharding
+- Fix: **Slider handling** — the handle no longer jumps back a step on release, left-click jumps it to the cursor, and near-miss clicks just above or below the groove now grab it. @seanharding
+- Fix: **Filmstrip thumbnails for composite frames** — RGB-scan triplets show the merged colour frame instead of the red-only exposure, and rendered thumbnails for triplets, half-frame splits and stitches are keyed by the asset's name, so the uninverted placeholder no longer sticks. @seanharding
+- Fix: **Camera scanning without live view** — the camera's advertised abilities are checked before live view starts, and bodies with no preview stay usable for scanning. @light-sntchr
+- Fix: **Intel macOS release builds** — the Intel build works again. @JKBusse
+
 ## 0.43.0
 
 - Change: **Cast removal finds neutrals more reliably** — the neutral-axis estimator measures chroma hue-uniformly, recovers strong but correctable casts it used to reject outright, and weights its confidence by how many near-neutral pixels it found and whether midtones and shadows agree.
