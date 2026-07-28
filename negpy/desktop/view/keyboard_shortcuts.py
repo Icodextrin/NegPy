@@ -26,8 +26,11 @@ def _context_undo(controller) -> None:
 
 
 def _context_cancel(controller, window) -> None:
-    """Esc ladder: the first press clears in-progress tool geometry (polyline
-    points, straighten line), the second puts the tool down."""
+    """Esc ladder: a test strip is dismissed first (it owns the canvas while up), then
+    in-progress tool geometry (polyline points, straighten line), then the tool itself."""
+    if controller.state.test_strip or controller.state.test_strip_pending:
+        controller.toggle_test_strip(force=False)
+        return
     if not window.canvas.overlay.cancel_in_progress():
         controller.cancel_active_tool()
 
@@ -94,6 +97,7 @@ class ShortcutManager:
             "analysis_draw": lambda: _toggle_tool_button(self.window, "setup", controls.process_sidebar.analysis_region_btn),
             "toggle_flat_peek": controller.toggle_flat_peek,
             "toggle_zones": controller.toggle_zones_overlay,
+            "toggle_test_strip": controller.toggle_test_strip,
             "cancel_tool": lambda: _context_cancel(controller, self.window),
             "toggle_left_panel": self.window.toggle_session_dock,
             "toggle_right_panel": self.window.toggle_controls_dock,

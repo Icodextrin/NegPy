@@ -25,6 +25,7 @@ from negpy.desktop.workers.render import (
     PreviewLoadWorker,
     RenderTask,
     RenderWorker,
+    TestStripTask,
     ThumbnailUpdateTask,
     ThumbnailWorker,
 )
@@ -52,6 +53,7 @@ from negpy.domain.models import (
 )
 from negpy.services.assets.half_frame import base_hash, slice_half
 from negpy.services.assets.sidecar import load_or_promote, write_sidecar
+from negpy.features.exposure.analysis import STRIP_DENSITIES, STRIP_GRADES, strip_cells
 from negpy.features.exposure.logic import (
     calculate_wb_shifts,
     calculate_wb_shifts_from_log,
@@ -181,6 +183,8 @@ class AppController(QObject):
     crop_guide_changed = pyqtSignal()
     dust_overlay_changed = pyqtSignal()
     zones_overlay_changed = pyqtSignal(bool)
+    strip_requested = pyqtSignal(TestStripTask)
+    test_strip_changed = pyqtSignal(bool)  # True = mosaic is up, False = cleared or building
     asset_discovery_requested = pyqtSignal(AssetDiscoveryTask)
     stitch_requested = pyqtSignal(object)
     thumbnail_requested = pyqtSignal(list)
@@ -340,6 +344,8 @@ class AppController(QObject):
         # Last displayed render per frame — navigate-back paints it instantly
         # while the authoritative render refreshes underneath.
         self._render_memo = RenderMemo()
+        # Test strips, keyed density/grade-blind (see _strip_memo_key).
+        self._strip_memo = RenderMemo()
 
         self._render_debounce = QTimer()
         self._render_debounce.setSingleShot(True)
@@ -448,7 +454,10 @@ class AppController(QObject):
 
     def _connect_signals(self) -> None:
         self.render_requested.connect(self.render_worker.process)
+        self.strip_requested.connect(self.render_worker.build_strip)
         self._render_cleanup_requested.connect(self.render_worker.cleanup)
+        self.render_worker.strip_finished.connect(self.on_strip_finished)
+        self.render_worker.strip_progress.connect(self.on_strip_progress)
         self.render_worker.finished.connect(self._on_render_finished)
         self.render_worker.metrics_updated.connect(self._on_metrics_updated)
         self.render_worker.error.connect(self._on_render_error)
@@ -546,6 +555,7 @@ class AppController(QObject):
 
         self.session.active_file_changing.connect(lambda: self._update_thumbnail_from_state(force_readback=True))
         self.session.session_emptied.connect(self._render_memo.clear)
+        self.session.session_emptied.connect(self._strip_memo.clear)
         self.session.file_selected.connect(self.load_file)
         self.session.state_changed.connect(self.config_updated.emit)
         self.session.state_changed.connect(self._render_debounce.start)
@@ -892,7 +902,7 @@ class AppController(QObject):
                 return (half, float(f.get("split_x") or 0.5)) if half else None
         return None
 
-    def _render_memo_key(self) -> str:
+    def _render_memo_key(self, config: Optional[WorkspaceConfig] = None) -> str:
         """Identity of everything that shapes the displayed render of the current
         config: the edit itself plus every display-path input. Any mismatch is a
         memo miss, so navigate-back only skips straight to pixels that would be
@@ -900,10 +910,11 @@ class AppController(QObject):
         import hashlib
         import json
 
+        config = self.state.config if config is None else config
         proofing = self.state.soft_proof_enabled
         narrowband = self.state.config.process.narrowband_scan
         parts = (
-            json.dumps(self.state.config.to_dict(), sort_keys=True, default=str),
+            json.dumps(config.to_dict(), sort_keys=True, default=str),
             self.state.hq_preview,
             self.state.workspace_color_space,
             self.state.gpu_enabled,
@@ -914,6 +925,17 @@ class AppController(QObject):
         )
         return hashlib.md5(repr(parts).encode()).hexdigest()
 
+    def _strip_memo_key(self) -> str:
+        """The render key with density and grade pinned to fixed values.
+
+        The strip supplies those two itself, one per patch, so the mosaic is invariant
+        to whatever they currently are — which makes the print/pick/print-again loop a
+        cache hit, since picking a patch changes nothing else. Any other edit (crop,
+        filtration, paper, toning...) lands on a different key and re-prints.
+        """
+        pinned = replace(self.state.config.exposure, density=1.0, grade=115.0)
+        return self._render_memo_key(replace(self.state.config, exposure=pinned))
+
     def load_file(self, file_path: str, preserve_zoom: bool = False, force_detect: bool = False) -> None:
         """
         Dispatches RAW decode to a background worker to keep the UI thread free.
@@ -921,6 +943,9 @@ class AppController(QObject):
         self._prefetch_gen += 1
         self._preview_load_t0 = time.perf_counter()
         self._requested_file_path = file_path
+        # A strip belongs to one frame, and the memo fast path below repaints without
+        # going through request_render — so drop it here, not only there.
+        self._clear_test_strip()
 
         # Navigate-back fast path: the frame's last render is memoized and nothing
         # that shaped it has changed (select_file already hydrated its config), so
@@ -1175,6 +1200,100 @@ class AppController(QObject):
         the canvas already holds, so no re-render is needed."""
         self.state.zones_overlay = (not self.state.zones_overlay) if force is None else bool(force)
         self.zones_overlay_changed.emit(self.state.zones_overlay)
+
+    def toggle_test_strip(self, force: Optional[bool] = None) -> None:
+        """Print (or clear) the density × grade test strip. Unlike the zone overlay this
+        needs pixels the canvas doesn't have, so entering dispatches one strip job."""
+        target = (not (self.state.test_strip or self.state.test_strip_pending)) if force is None else bool(force)
+        if not target:
+            self._clear_test_strip()
+            return
+        if self.state.preview_raw is None:
+            return
+
+        # Reprinting an unchanged strip is 36 renders for pixels we already have.
+        cached = self._strip_memo.get(self.state.current_file_hash or "", self._strip_memo_key())
+        if cached is not None:
+            self.on_strip_finished(cached["mosaic"], cached["content_rect"], from_cache=True)
+            return
+
+        proofing = self.state.soft_proof_enabled
+        icc_input = self.effective_input_icc() if (proofing or self.state.config.process.narrowband_scan) else None
+        self.state.test_strip_pending = True
+        self.test_strip_changed.emit(False)
+        # 36 renders take a few seconds; say so up front and tick the HUD progress bar
+        # per patch so it's clear the app is working rather than wedged.
+        self.status_message_requested.emit("Printing test strip…", 2500)
+        self.status_progress_requested.emit(0, len(strip_cells()))
+        self.strip_requested.emit(
+            TestStripTask(
+                buffer=self.state.preview_raw,
+                config=self.state.config,
+                source_hash=self.state.current_file_hash or "preview",
+                # Always preview res, never HQ: 36 full-res renders would take minutes,
+                # and the patches are shown at a sixth of the frame's width anyway. The
+                # mosaic scales to the content rect, so a smaller one costs nothing here.
+                preview_size=float(APP_CONFIG.preview_render_size),
+                icc_input_path=icc_input,
+                icc_output_path=self.effective_output_icc() if proofing else None,
+                color_space=self.state.workspace_color_space,
+                gpu_enabled=self.state.gpu_enabled,
+                ir_buffer=self.state.preview_ir,
+                monitor_icc_bytes=self.state.monitor_icc_bytes,
+            )
+        )
+
+    def on_strip_progress(self, done: int, total: int) -> None:
+        if self.state.test_strip_pending:
+            self.status_progress_requested.emit(done, total)
+
+    def _clear_test_strip(self) -> None:
+        """Drop the strip and its mosaic; silent when there was nothing up."""
+        if not (self.state.test_strip or self.state.test_strip_pending):
+            return
+        if self.state.test_strip_pending:
+            self.status_progress_requested.emit(0, 0)  # total <= 0 hides the bar
+        self.state.test_strip = False
+        self.state.test_strip_pending = False
+        self.state.test_strip_mosaic = None
+        self.state.test_strip_content_rect = None
+        self.test_strip_changed.emit(False)
+
+    def on_strip_finished(self, mosaic: Any, content_rect: Any, from_cache: bool = False) -> None:
+        # A render that landed while the strip was building already cancelled it.
+        if not (self.state.test_strip_pending or from_cache):
+            return
+        if not from_cache:
+            # Keyed on the config as it stands now, not as it was at dispatch: measured
+            # bounds are persisted after a render with render=False, so the config drifts
+            # mid-print without invalidating anything (the same drift RenderMemo.rekey
+            # exists for). Keying at dispatch made every reprint a miss. Safe because a
+            # change that *did* matter would have gone through request_render, which
+            # cancels the strip outright.
+            self._strip_memo.store(
+                self.state.current_file_hash or "",
+                self._strip_memo_key(),
+                {"mosaic": mosaic, "content_rect": content_rect},
+            )
+        self.state.test_strip_pending = False
+        self.state.test_strip = True
+        self.state.test_strip_mosaic = mosaic
+        self.state.test_strip_content_rect = content_rect
+        self.test_strip_changed.emit(True)
+        self.status_message_requested.emit("Test strip ready — click a patch to keep it", 4000)
+
+    def apply_test_strip_pick(self, row: int, col: int) -> None:
+        """Commit the clicked patch's density/grade, then drop the strip."""
+        if not self.state.test_strip:
+            return
+        density, grade = STRIP_DENSITIES[col], STRIP_GRADES[row]
+        self._clear_test_strip()
+        # Auto Density / Auto Grade are left exactly as they were: the patches were
+        # rendered under them, so changing them would render something other than the
+        # patch that was clicked.
+        new_exposure = replace(self.state.config.exposure, density=density, grade=grade)
+        self.session.update_config(replace(self.state.config, exposure=new_exposure), persist=True)
+        self.request_render()
 
     def handle_crop_rect_changed(self, nx1: float, ny1: float, nx2: float, ny2: float, persist: bool) -> None:
         """Live-updates (persist=False) or commits (persist=True) the manual crop rect
@@ -2405,6 +2524,12 @@ class AppController(QObject):
             self.state.flat_peek = False
             self.flat_peek_changed.emit(False)
 
+        # The strip's patches were printed from the config as it stood; once the edit
+        # moves they are a proof of something else, so drop them (this also cancels a
+        # strip still building).
+        if config_override is None:
+            self._clear_test_strip()
+
         if self.state.preview_raw is None:
             return
 
@@ -2474,6 +2599,8 @@ class AppController(QObject):
             if self.state.flat_peek:
                 self.state.flat_peek = False
                 self.flat_peek_changed.emit(False)
+            # Same reason the strip and the peek are exclusive: both want the canvas.
+            self._clear_test_strip()
             self.state.compare_mode = True
             self.compare_changed.emit(True)
             self.request_render(readback_metrics=False, config_override=self._baseline_compare_config())
@@ -2533,6 +2660,8 @@ class AppController(QObject):
         if target and self.state.compare_mode:
             self.state.compare_mode = False
             self.compare_changed.emit(False)
+        if target:
+            self._clear_test_strip()
 
         self.state.flat_peek = target
         self.flat_peek_changed.emit(target)
