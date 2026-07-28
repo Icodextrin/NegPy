@@ -3,10 +3,14 @@ import numpy as np
 import pytest
 from negpy.features.geometry.logic import (
     _closest_standard_ratio,
+    _refine_roi_to_image,
+    _roi_from_measured_border,
     detect_closest_aspect_ratio,
     get_autocrop_coords,
     get_manual_crop_coords,
     get_manual_rect_coords,
+    measure_film_border,
+    scale_roi_inset,
 )
 from negpy.features.geometry.processor import CropProcessor, GeometryProcessor
 from negpy.features.geometry.models import GeometryConfig
@@ -1155,3 +1159,116 @@ def test_canonical_crop_ratio_maps_portrait_forms_to_the_picker_entry():
 def test_canonical_crop_ratio_passes_through_unrecognized_values():
     assert canonical_crop_ratio("Free") == "Free"
     assert canonical_crop_ratio("3:2") == "3:2"
+
+
+def _film_box(top=8, bottom=8, left=12, right=12, shape=(400, 600), border=0.95, image=0.35):
+    box = np.full(shape, image, dtype=np.float32)
+    box[:top, :] = border
+    box[shape[0] - bottom :, :] = border
+    box[:, :left] = border
+    box[:, shape[1] - right :] = border
+    return box
+
+
+def test_measure_film_border_recovers_known_per_side_widths():
+    box = _film_box(top=8, bottom=20, left=12, right=30)
+
+    measured = measure_film_border(box, (0, 400, 0, 600))
+
+    assert measured["top"] == pytest.approx(8 / 400)
+    assert measured["bottom"] == pytest.approx(20 / 400)
+    assert measured["left"] == pytest.approx(12 / 600)
+    assert measured["right"] == pytest.approx(30 / 600)
+
+
+def test_measure_film_border_reports_nan_when_bright_content_reaches_the_edge():
+    # The rebate is real on top but the lower third is a uniform bright sky running to
+    # the frame edge -- indistinguishable from film base within one frame, so the side
+    # must abstain rather than report a plausible-looking number.
+    box = _film_box(top=8, bottom=0, left=0, right=0)
+    box[260:, :] = 0.70
+
+    measured = measure_film_border(box, (0, 400, 0, 600))
+
+    assert measured["top"] == pytest.approx(8 / 400)
+    assert np.isnan(measured["bottom"])
+
+
+def test_measure_film_border_reports_zero_for_a_full_bleed_edge():
+    box = _film_box(top=8, bottom=0, left=0, right=0)
+
+    measured = measure_film_border(box, (0, 400, 0, 600))
+
+    assert measured["bottom"] == 0.0
+    assert measured["left"] == 0.0
+    assert measured["right"] == 0.0
+
+
+def test_measure_film_border_survives_a_bed_sliver_at_the_box_edge():
+    # Real film boxes rarely start exactly on the rebate: a few px of darker bed ramp up
+    # into it first. Walking from index 0 crosses the threshold immediately and calls a
+    # bordered side full-bleed, so the walk has to start at the brightest sample.
+    box = _film_box(top=20, bottom=20, left=20, right=20)
+    ramp = np.linspace(0.2, 0.95, 6, dtype=np.float32)
+    box[:6, :] = ramp[:, None]
+    box[:, :6] = np.minimum(box[:, :6], ramp[None, :])
+
+    measured = measure_film_border(box, (0, 400, 0, 600))
+
+    assert measured["top"] == pytest.approx(20 / 400)
+    assert measured["left"] == pytest.approx(20 / 600)
+
+
+def test_measured_border_route_insets_a_box_the_tier_path_cannot_read():
+    # A 4% strip of this box is 16px, so the tier path's probe straddles the 8px rebate
+    # and the picture, and abstains. That is the case that left the rebate on.
+    roi, row_occ, col_occ = _refine_roi_to_image(_film_box(), (0, 400, 0, 600))
+
+    assert roi == (8, 392, 12, 588)
+    assert row_occ is None and col_occ is None
+
+
+def test_measured_border_needs_an_opposite_pair():
+    # One bright side alone is usually a sunlit wall, not film base.
+    lone = _film_box(top=8, bottom=0, left=0, right=0)
+
+    assert _roi_from_measured_border(lone, (0, 400, 0, 600)) is None
+
+
+def test_measured_border_abstaining_side_inherits_its_opposite():
+    box = _film_box(top=8, bottom=8, left=0, right=0)
+    box[260:, :] = 0.70  # bright sky to the bottom edge: that side abstains
+
+    roi = _roi_from_measured_border(box, (0, 400, 0, 600))
+
+    assert roi == (8, 392, 0, 600)
+
+
+def test_measured_border_caps_a_side_against_its_opposite():
+    # A long walk on one side cannot cut deeper than twice its opposite, same film gate.
+    box = _film_box(top=20, bottom=4, left=12, right=12)
+
+    roi = _roi_from_measured_border(box, (0, 400, 0, 600))
+
+    assert roi[0] == 8  # capped at 2 x 4px, not the measured 20px
+    assert roi[1] == 396
+
+
+def test_rebate_trim_scales_the_inset_between_film_edge_and_image_edge():
+    film_roi, refined = (0, 400, 0, 600), (8, 392, 12, 588)
+
+    assert scale_roi_inset(film_roi, refined, 0.0) == film_roi
+    assert scale_roi_inset(film_roi, refined, 1.0) == refined
+    assert scale_roi_inset(film_roi, refined, 1.5) == (12, 388, 18, 582)
+
+
+def test_rebate_trim_is_inert_when_nothing_was_refined_away():
+    # Film mode and unrefined detections hand back the film box, so every inset is zero.
+    film_roi = (0, 400, 0, 600)
+
+    assert scale_roi_inset(film_roi, film_roi, 0.0) == film_roi
+    assert scale_roi_inset(film_roi, film_roi, 1.5) == film_roi
+
+
+def test_rebate_trim_keeps_the_roi_rather_than_collapsing_it():
+    assert scale_roi_inset((0, 400, 0, 600), (150, 250, 12, 588), 3.0) == (150, 250, 12, 588)
