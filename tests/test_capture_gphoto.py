@@ -116,12 +116,26 @@ class _Camera:
 
     def capture_preview(self):
         self._check()
+        if self._fake.preview_error:  # only the preview is broken; the body still answers
+            raise _Err(self._fake.preview_error)
+        if self._fake.late_events or self._fake.event_gap:
+            # Fujifilm behaviour (issue #658): post-shot events left unread block the preview.
+            raise _Err("[-1] Unspecified error")
         self._fake.previews += 1
         return _File(b"\xff\xd8JPEG")
 
-    def wait_for_event(self, _ms):
+    def wait_for_event(self, ms):
+        self._fake.event_waits.append(ms)
         if self._fake.undrained:
             self._fake.undrained = False
+            if self._fake.late_events:
+                self._fake.event_gap = True  # the pause that ends an impatient drain early
+            return FakeGP.GP_EVENT_CAPTURE_COMPLETE, None
+        if self._fake.event_gap:
+            self._fake.event_gap = False
+            return FakeGP.GP_EVENT_TIMEOUT, None
+        if self._fake.late_events:
+            self._fake.late_events -= 1
             return FakeGP.GP_EVENT_CAPTURE_COMPLETE, None
         return FakeGP.GP_EVENT_TIMEOUT, None
 
@@ -168,6 +182,10 @@ class FakeGP:
         self.driver_model = driver_model
         self.operations = operations
         self.abilities_error = False
+        self.preview_error = None  # set to a message so capture_preview fails but config reads do not
+        self.late_events = 0  # post-shot events the body only hands over after a pause (Fujifilm, #658)
+        self.event_gap = False
+        self.event_waits: list[int] = []  # the quiet-window ms passed to each wait_for_event
         self.opened = False
         self.undrained = False
         self.gone = False  # set by unplug(): the body stops answering, as on a pulled cable
@@ -622,6 +640,101 @@ def test_live_view_is_refused_on_a_body_without_the_preview_ability(tmp_path):
     assert fake.previews == 0  # the wedge is avoided, not merely reported
     assert not camera.is_running()
     assert camera.is_open()  # the session itself stays usable — this body still scans
+    camera.close()
+
+
+def test_a_broken_preview_keeps_the_session_alive_when_the_camera_still_answers(fake, tmp_path):
+    """Issue #658: a Fujifilm returns [-1] from capture_preview forever while it keeps shooting.
+    Dropping the session there kills a working scan, and the reopen loop that follows walks the
+    body off the USB bus."""
+    import time
+
+    unusable: list[str] = []
+    died: list[str] = []
+    camera = GphotoCamera(
+        gp_module=fake,
+        jpeg_path=str(tmp_path / "lv.jpg"),
+        settings_path=str(tmp_path / "lv.json"),
+        on_preview_died=died.append,
+        on_preview_unusable=unusable.append,
+    )
+    camera.start()
+    fake.preview_error = "[-1] Unspecified error"  # only the preview breaks; config reads still work
+
+    for _ in range(300):
+        if not camera.is_running():
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("the preview thread never gave up")
+
+    assert unusable and not died  # reported as "no preview", not as a dead camera
+    assert camera.is_open()  # the session a scan needs is untouched
+    camera.close()
+
+
+def test_a_body_with_a_broken_preview_is_not_restarted(fake, tmp_path):
+    """Restarting is what turns one failed preview into a reconnect loop."""
+    import time
+
+    camera = GphotoCamera(gp_module=fake, jpeg_path=str(tmp_path / "lv.jpg"), settings_path=str(tmp_path / "lv.json"))
+    camera.start()
+    fake.preview_error = "[-1] Unspecified error"
+    for _ in range(300):
+        if not camera.is_running():
+            break
+        time.sleep(0.01)
+
+    previews = fake.previews
+    with pytest.raises(LiveViewUnsupported, match="live view does not work"):
+        camera.start()
+    assert fake.previews == previews  # refused without touching the body again
+    camera.close()
+
+
+def test_fuji_gets_a_patient_event_drain(tmp_path):
+    """The X-T5 delivers post-shot events with pauses past 50 ms; a drain that stops at the
+    first quiet 50 ms leaves them unread, which blocks the next preview (issue #658)."""
+    fuji = FakeGP(driver_model="Fuji Fujifilm X-T5", operations=25)
+    camera = GphotoCamera(gp_module=fuji, jpeg_path=str(tmp_path / "a.jpg"))
+    camera.open()
+    camera._drain_events()
+    assert fuji.event_waits[-1] == 300  # waits out Fujifilm's inter-event pauses
+    camera.close()
+
+    other = FakeGP()
+    camera = GphotoCamera(gp_module=other, jpeg_path=str(tmp_path / "b.jpg"))
+    camera.open()
+    camera._drain_events()
+    assert other.event_waits[-1] == 50  # everyone else keeps the snappy window
+    camera.close()
+
+
+def test_preview_survives_a_still_that_leaves_late_events(fake, tmp_path):
+    """Issue #658's core failure: events the body hands over only after a pause killed every
+    capture_preview after the first still. The preview thread now drains before its first
+    frame after a capture (and before any retry), so the stream survives."""
+    import time
+
+    camera = GphotoCamera(gp_module=fake, jpeg_path=str(tmp_path / "lv.jpg"), settings_path=str(tmp_path / "lv.json"))
+    camera.start()
+    for _ in range(300):
+        if fake.previews:
+            break
+        time.sleep(0.01)
+
+    fake.late_events = 2  # this still's events arrive with a pause the overlapped drain trips over
+    camera.capture(str(tmp_path / "f.ARW"))
+    before = fake.previews
+    for _ in range(300):
+        if fake.previews > before:
+            break
+        time.sleep(0.01)
+    else:
+        raise AssertionError("the preview never came back after the still")
+
+    assert camera.is_running()  # not degraded, not dropped — the stream simply continued
+    assert fake.late_events == 0 and not fake.event_gap  # the queue was actually cleared
     camera.close()
 
 
