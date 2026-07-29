@@ -128,13 +128,22 @@ def zone_region_labels(zones: np.ndarray) -> List[Tuple[int, int, int]]:
     return out
 
 
-# Test strip ladder: a fixed absolute grid, not an offset around the current
-# settings, so a strip printed off one frame is comparable to the next. Columns
-# darken left to right, rows soften top to bottom — the two diagonals then read as
-# the darkroom's light/dark and soft/hard axes. Named strip_* rather than
-# test_strip_*: pytest collects any test_-prefixed callable a test module imports.
-STRIP_DENSITIES = (0.4, 0.7, 1.0, 1.3, 1.6, 1.9)
-STRIP_GRADES = (55.0, 80.0, 105.0, 130.0, 155.0, 180.0)
+# Absolute ladders, centred on the defaults and inside the sliders' travel (density 0-2,
+# grade R50-R180). Named strip_* not test_strip_*: pytest collects any test_-prefixed
+# callable a test module imports.
+STRIP_DENSITIES = (0.4, 0.7, 1.0, 1.3, 1.6)
+STRIP_GRADES = (75.0, 95.0, 115.0, 135.0, 155.0)
+
+
+STRIP_GRID = (len(STRIP_GRADES), len(STRIP_DENSITIES))  # (rows, cols)
+
+# Ring-around rungs: absolute filtration centred on neutral, like the strip's ladders, so a
+# ring printed off one frame is comparable to the next and the mosaic is invariant to the
+# filtration in force. 1.0 slider = 20cc (see filtration_offsets), so the step is 1cc and the
+# outer rung 2cc. Calibration knobs.
+RING_CC_STEP = 0.05
+RING_CC_PER_UNIT = 20.0
+RING_GRID = (5, 5)
 
 
 def strip_cells() -> List[Tuple[int, int, float, float]]:
@@ -142,38 +151,78 @@ def strip_cells() -> List[Tuple[int, int, float, float]]:
     return [(r, c, d, g) for r, g in enumerate(STRIP_GRADES) for c, d in enumerate(STRIP_DENSITIES)]
 
 
+def strip_overrides() -> List[dict]:
+    """ExposureConfig field overrides per patch, row-major over STRIP_GRID."""
+    return [{"density": d, "grade": g} for _, _, d, g in strip_cells()]
+
+
+def ring_rungs() -> Tuple[float, ...]:
+    """The absolute wb values one axis steps through, centred on neutral."""
+    mid = RING_GRID[0] // 2
+    return tuple(round((i - mid) * RING_CC_STEP, 6) for i in range(RING_GRID[0]))
+
+
+def ring_cells() -> List[Tuple[int, int, float, float]]:
+    """(row, col, wb_magenta, wb_yellow) row-major. Rows step magenta, columns yellow, cyan
+    stays 0. Absolute, so the centre patch is neutral rather than whatever is dialled in."""
+    rungs = ring_rungs()
+    rows, cols = RING_GRID
+    return [(r, c, rungs[r], rungs[c]) for r in range(rows) for c in range(cols)]
+
+
+def ring_overrides() -> List[dict]:
+    """Per-patch ExposureConfig overrides. Only the two colour-head fields, so a replace()
+    built from these cannot disturb density, grade or cyan."""
+    return [{"wb_magenta": m, "wb_yellow": y} for _, _, m, y in ring_cells()]
+
+
+def ring_cc(index: int) -> float:
+    """A rung's filtration in cc, as the axis labels show it."""
+    return ring_rungs()[index] * RING_CC_PER_UNIT
+
+
+def ring_nearest_cell(magenta: float, yellow: float) -> Tuple[int, int]:
+    """(row, col) of the patch closest to the filtration in force."""
+    rungs = ring_rungs()
+    return (
+        int(np.argmin([abs(m - magenta) for m in rungs])),
+        int(np.argmin([abs(y - yellow) for y in rungs])),
+    )
+
+
 def _strip_bounds(extent: int, divisions: int, index: int) -> Tuple[int, int]:
     return round(extent * index / divisions), round(extent * (index + 1) / divisions)
 
 
-def strip_mosaic(tiles: List[np.ndarray]) -> np.ndarray:
-    """One frame assembled from `strip_cells()`-ordered renders, each contributing only
-    its own patch. Bounds are rounded from the same fractions on both sides of a seam,
-    so patches tile exactly — no gap, no overlap."""
-    cells = strip_cells()
-    if len(tiles) != len(cells):
-        raise ValueError(f"expected {len(cells)} tiles, got {len(tiles)}")
+def strip_mosaic(tiles: List[np.ndarray], grid: Tuple[int, int]) -> np.ndarray:
+    """One frame assembled from row-major renders over `grid`, each contributing only its own
+    patch. Both sides of a seam round the same fraction, so patches tile exactly."""
+    rows, cols = grid
+    if len(tiles) != rows * cols:
+        raise ValueError(f"expected {rows * cols} tiles, got {len(tiles)}")
     out = np.empty_like(tiles[0])
     h, w = out.shape[:2]
-    for (row, col, _, _), tile in zip(cells, tiles):
+    for i, tile in enumerate(tiles):
         if tile.shape != out.shape:
             raise ValueError(f"tile shape {tile.shape} != {out.shape}")
-        y0, y1 = _strip_bounds(h, len(STRIP_GRADES), row)
-        x0, x1 = _strip_bounds(w, len(STRIP_DENSITIES), col)
+        row, col = divmod(i, cols)
+        y0, y1 = _strip_bounds(h, rows, row)
+        x0, x1 = _strip_bounds(w, cols, col)
         out[y0:y1, x0:x1] = tile[y0:y1, x0:x1]
     return out
 
 
-def strip_patch_rect(h: int, w: int, row: int, col: int) -> Tuple[int, int, int, int]:
+def strip_patch_rect(h: int, w: int, row: int, col: int, grid: Tuple[int, int]) -> Tuple[int, int, int, int]:
     """(x0, y0, x1, y1) of one patch inside an h×w frame — the bounds `strip_mosaic` filled."""
-    y0, y1 = _strip_bounds(h, len(STRIP_GRADES), row)
-    x0, x1 = _strip_bounds(w, len(STRIP_DENSITIES), col)
+    rows, cols = grid
+    y0, y1 = _strip_bounds(h, rows, row)
+    x0, x1 = _strip_bounds(w, cols, col)
     return x0, y0, x1, y1
 
 
-def strip_cell_at(nx: float, ny: float) -> Tuple[int, int]:
+def strip_cell_at(nx: float, ny: float, grid: Tuple[int, int]) -> Tuple[int, int]:
     """Content-normalized position (0..1) -> (row, col)."""
-    rows, cols = len(STRIP_GRADES), len(STRIP_DENSITIES)
+    rows, cols = grid
     return (
         int(np.clip(int(ny * rows), 0, rows - 1)),
         int(np.clip(int(nx * cols), 0, cols - 1)),

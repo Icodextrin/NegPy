@@ -108,6 +108,9 @@ class AppState:
     test_strip_pending: bool = False
     test_strip_mosaic: Optional[Any] = None
     test_strip_content_rect: Optional[tuple] = None
+    # Which proof owns the canvas: "tone" (density × grade) or "colour" (M/Y ring-around).
+    # One slot, so every path that drops a proof drops both kinds.
+    test_strip_kind: str = "tone"
 
     # Reverse scroll-wheel zoom direction on the image viewer (scroll up = zoom out).
     invert_zoom_scroll: bool = False

@@ -9,7 +9,7 @@ from PyQt6.QtGui import QMouseEvent, QPainter, QPixmap
 
 from negpy.desktop.session import AppState, ToolMode
 from negpy.desktop.view.canvas.overlay import CanvasOverlay
-from negpy.features.exposure.analysis import STRIP_DENSITIES, STRIP_GRADES
+from negpy.features.exposure.analysis import RING_GRID, STRIP_DENSITIES, STRIP_GRADES
 
 
 def _press(pos: QPointF) -> QMouseEvent:
@@ -120,3 +120,39 @@ def test_clearing_the_strip_drops_the_hover_and_the_picker_cursor() -> None:
 
     assert overlay._strip_hover is None
     assert overlay._strip_cache is None
+
+
+def _ring_overlay() -> CanvasOverlay:
+    state = AppState()
+    state.test_strip = True
+    state.test_strip_kind = "colour"
+    state.test_strip_mosaic = np.zeros((90, 90, 3), dtype=np.float32)
+    overlay = CanvasOverlay(state)
+    overlay._view_rect = QRectF(0, 0, 90, 90)
+    overlay._current_size = (90, 90)
+    return overlay
+
+
+def test_the_ring_picks_across_its_own_grid() -> None:
+    """The overlay reads the grid off the proof kind, so a click on the ring must map to the
+    ring's geometry rather than the tone strip's."""
+    overlay = _ring_overlay()
+    picked: list = []
+    overlay.test_strip_picked.connect(lambda r, c: picked.append((r, c)))
+
+    overlay.mousePressEvent(_press(QPointF(5, 5)))
+    overlay.mousePressEvent(_press(QPointF(45, 45)))
+    overlay.mousePressEvent(_press(QPointF(85, 85)))
+
+    mid = (RING_GRID[0] // 2, RING_GRID[1] // 2)
+    assert picked == [(0, 0), mid, (RING_GRID[0] - 1, RING_GRID[1] - 1)]
+
+
+def test_each_proof_kind_lays_out_its_own_grid() -> None:
+    overlay = _ring_overlay()
+    assert overlay._strip_grid() == RING_GRID
+    assert len(overlay._strip_patch_rects(QRectF(0, 0, 90, 90))) == RING_GRID[0] * RING_GRID[1]
+    # And the tone strip still gets its own grid off the same helper.
+    overlay.state.test_strip_kind = "tone"
+    assert overlay._strip_grid() == (len(STRIP_GRADES), len(STRIP_DENSITIES))
+    assert len(overlay._strip_patch_rects(QRectF(0, 0, 90, 90))) == len(STRIP_GRADES) * len(STRIP_DENSITIES)
