@@ -21,7 +21,7 @@ from negpy.desktop.view.sidebar.history import HistoryPanel
 from negpy.desktop.view.sidebar.metadata import MetadataSidebar
 from negpy.desktop.view.styles.templates import EditedDot
 from negpy.desktop.view.styles.theme import THEME
-from negpy.desktop.view.widgets.charts import PhotometricCurveWidget, ZoneStripWidget
+from negpy.desktop.view.widgets.charts import PhotometricCurveWidget, StepWedgeWidget, ZoneStripWidget
 from negpy.desktop.view.widgets.collapsible import CollapsibleSection
 from negpy.desktop.view.widgets.stats import DensitometerRow, NegativeStatsWidget
 
@@ -53,6 +53,7 @@ class RightPanel(QWidget):
         analysis_layout.setContentsMargins(5, 5, 5, 5)
 
         self.curve_widget = PhotometricCurveWidget()
+        self.step_wedge = StepWedgeWidget()
         self.zone_strip = ZoneStripWidget()
         self.probe_row = DensitometerRow()
         self.stats_widget = NegativeStatsWidget()
@@ -63,6 +64,7 @@ class RightPanel(QWidget):
         self.curve_widget.scale_changed.connect(lambda enabled: repo.save_global_setting("histogram_log_scale", bool(enabled)))
 
         analysis_layout.addWidget(self.curve_widget, 1)
+        analysis_layout.addWidget(self.step_wedge, 0)
         analysis_layout.addWidget(self.zone_strip, 0)
         analysis_layout.addWidget(self.probe_row, 0)
         analysis_layout.addWidget(self.stats_widget, 0)
@@ -354,12 +356,10 @@ class RightPanel(QWidget):
 
         self._update_histograms(metrics)
 
-        from negpy.features.exposure.logic import cast_solve_inputs, per_channel_curve_params
-        from negpy.features.exposure.papers import effective_paper_profile
+        from negpy.features.exposure.logic import curve_params_from_metrics
 
         config = self.controller.session.state.config.exposure
         process_mode = self.controller.session.state.config.process.process_mode
-        paper = effective_paper_profile(config.paper_profile, process_mode)
 
         # While peeking the flat master, plot the flat curve so the chart matches
         # what the canvas is showing.
@@ -370,38 +370,18 @@ class RightPanel(QWidget):
             flat_cfg = flat_master_config(self.controller.session.state.config).exposure
             gain, lift = flat_curve_params()
             self.curve_widget.update_curve(flat_cfg, slope=gain, pivot=lift, flat=True)
+            # A flat master has no print curve, so there is no wedge to print through it.
+            self.step_wedge.setVisible(False)
         else:
             # Mirror PhotometricProcessor so the plotted curve matches the render under
-            # the Auto Grade / Auto Density / Cast Removal toggles. CPU stores
-            # "final_bounds", GPU stores "log_bounds".
-            anchor = metrics.get("metered_anchor") if config.auto_exposure else None
-            d_min = paper.d_min if config.paper_dmin else 0.0
-            bounds = metrics.get("final_bounds") or metrics.get("log_bounds")
-            strength, shadow_refs_norm, neutral_axis_norm = cast_solve_inputs(
-                bounds,
-                metrics.get("shadow_log_refs"),
-                metrics.get("neutral_axis_refs"),
-                config.cast_removal_strength,
-            )
-            slopes, pivots, curvatures = per_channel_curve_params(
-                config.grade,
-                config.density,
-                config.auto_normalize_contrast,
-                strength,
-                metrics.get("norm_density_range"),
-                shadow_refs_norm,
-                metrics.get("textural_range"),
-                d_min=d_min,
-                anchor=anchor,
-                paper=paper,
-                neutral_axis_norm=neutral_axis_norm,
-                grade_trims=(config.grade_trim_red, config.grade_trim_green, config.grade_trim_blue),
-            )
+            # the Auto Grade / Auto Density / Cast Removal toggles.
+            slopes, pivots, curvatures = curve_params_from_metrics(config, process_mode, metrics)
             # Green channel is the base curve (white reference + stats slope).
             slope, pivot = slopes[1], pivots[1]
             self.curve_widget.update_curve(
                 config, slope=slope, pivot=pivot, slopes=slopes, pivots=pivots, curvatures=curvatures, process_mode=process_mode
             )
+            self._update_step_wedge(config, process_mode, slope, pivot, metrics)
 
         from negpy.features.exposure.stats import negative_statistics
 
@@ -415,3 +395,14 @@ class RightPanel(QWidget):
                 scan_clip=metrics.get("scan_clip_fractions"),
             )
         )
+
+    def _update_step_wedge(self, config: Any, process_mode: Any, slope: float, pivot: float, metrics: Dict[str, Any]) -> None:
+        """21 known log exposures through the same curve the chart just plotted, so the wedge
+        and the chart can never describe different prints."""
+        from negpy.features.exposure.analysis import wedge_step_density, wedge_vals
+        from negpy.features.exposure.logic import print_curve, print_curve_output
+
+        enc = print_curve_output(print_curve(config, slope, pivot, process_mode), wedge_vals())
+        display_cs, monitor_bytes = self.controller.display_transform_params()
+        self.step_wedge.setVisible(True)
+        self.step_wedge.update_data(enc, wedge_step_density(metrics.get("norm_density_range")), display_cs, monitor_bytes)
