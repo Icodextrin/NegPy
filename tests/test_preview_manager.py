@@ -286,6 +286,39 @@ def test_load_linear_preview_ir_preview_resized_with_downscale() -> None:
     assert max(out_meta["ir_preview"].shape) == 80
 
 
+def test_ir_preview_survives_the_stacked_dng_fast_path() -> None:
+    """A SilverFast HDRi DNG keeps its libraw decode, making it the one IR carrier that reaches
+    the fast path (the others arrive as NonStandardFileWrapper, which use_fast excludes).
+    half_size is still requested, and IR survives only because libraw ignores it on a stacked
+    LinearRaw and returns full-res — should that ever start halving, ir_preview goes None and
+    IR Removal greys out with no error anywhere."""
+    rgb_u16 = np.full((120, 160, 3), 20000, dtype=np.uint16)
+    ir = np.full((120, 160), 0.9, dtype=np.float32)
+
+    raw = MagicMock()
+    raw.raw_type = rawpy.RawType.Stack
+    raw.raw_pattern = np.zeros((2, 2), dtype=np.uint8)
+    raw.sizes = SimpleNamespace(raw_height=120, raw_width=160, iheight=120, iwidth=160)
+    raw.postprocess = MagicMock(return_value=rgb_u16)
+
+    class _Ctx:
+        def __enter__(self) -> MagicMock:
+            return raw
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    with patch("negpy.services.rendering.preview_manager.loader_factory") as lf:
+        lf.get_loader.return_value = (_Ctx(), {"color_space": None, "orientation": 1, "ir": ir})
+        buf, _dims, out_meta = PreviewManager().load_linear_preview("/fake/HighDef.dng", use_camera_wb=False)
+
+    _, kwargs = raw.postprocess.call_args
+    assert kwargs.get("half_size") is True, "the fast path is what makes this the case worth pinning"
+    assert out_meta["ir_preview"] is not None
+    assert out_meta["ir_preview"].shape == buf.shape[:2]
+    assert np.allclose(out_meta["ir_preview"], 0.9, atol=1e-4)
+
+
 def test_ir_preview_survives_warm_cache_hit() -> None:
     """A warm cache hit must still carry ir_preview — the cache stores/returns metadata."""
     data = np.full((120, 160, 3), 0.5, dtype=np.float32)

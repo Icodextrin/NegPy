@@ -196,6 +196,10 @@ class PreviewManager:
         # IR channel travels with the preview; resize it to match the final preview dims.
         # Min-preserving, not INTER_AREA: this is the only place the full-res IR exists,
         # so a sub-pixel hair's dip has to survive *here* or dust detection never sees it.
+        # The dims equality holds for every IR source: libraw ignores half_size on the
+        # stacked LinearRaw a SilverFast HDRi DNG decodes as, and the other IR carriers
+        # arrive as NonStandardFileWrapper, which use_fast excludes. A plane that does
+        # mismatch belongs to another frame (a stale sidecar) and is dropped, not scaled.
         if ir_full is not None and ir_full.shape[:2] == (h_p, w_p):
             ph, pw = preview_raw.shape[:2]
             if (ph, pw) != ir_full.shape[:2]:

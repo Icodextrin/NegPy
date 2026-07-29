@@ -533,11 +533,12 @@ class ImageProcessor:
         f32_buffer = uint16_to_float32(rgb)
 
         if ir_full is not None and ir_full.shape[:2] != f32_buffer.shape[:2]:
-            # half-size decode only; CPU retouch silently skips a mismatched IR
-            import cv2
-
+            # Defensive: no current IR carrier half-sizes (libraw ignores half_size on
+            # stacked LinearRaw, NonStandardFileWrapper is excluded from fast decode), but a
+            # mismatched plane must be rescaled or CPU retouch silently skips it. Routed
+            # through downsample_ir, not INTER_AREA, so a sub-pixel hair keeps its dip.
             ih, iw = f32_buffer.shape[:2]
-            ir_full = cv2.resize(ir_full, (iw, ih), interpolation=cv2.INTER_AREA)
+            ir_full = downsample_ir(ir_full, max(ih, iw), dims=(iw, ih))
 
         orientation = metadata.get("orientation", 1)
         f32_buffer = apply_exif_orientation(f32_buffer, orientation)

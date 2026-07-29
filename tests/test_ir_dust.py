@@ -191,6 +191,79 @@ def test_rawpy_loader_dng_thumbnail_subifd_ir():
         assert metadata["ir"].shape == (h, w)
 
 
+def _write_silverfast_hdri_dng(path: str, h: int, w: int, ir_level: int = 50000) -> np.ndarray:
+    """A SilverFast 9 HDRi DNG, as `HighDef.dng` off a Plustek OpticFilm 8200i is built:
+    a thumbnail IFD0 whose SubIFD carries the full-res *3*-sample LinearRaw frame, a
+    reduced-resolution RGB preview page, and the infrared record as its own full-res
+    grayscale page. Returns the RGB written into the SubIFD."""
+    rgb = np.random.randint(0, 65535, (h, w, 3)).astype(np.uint16)
+    thumb = np.zeros((max(1, h // 8), max(1, w // 8), 3), dtype=np.uint16)
+    preview = np.zeros((max(1, h // 2), max(1, w // 2), 3), dtype=np.uint16)
+    ir = np.full((h, w), ir_level, dtype=np.uint16)
+    dng_tags = [
+        (50706, 1, 4, (1, 4, 0, 0), True),  # DNGVersion
+        (50707, 1, 4, (1, 0, 0, 0), True),  # DNGBackwardVersion
+    ]
+    with tifffile.TiffWriter(path) as tw:
+        tw.write(thumb, photometric="rgb", subfiletype=1, subifds=1, extratags=dng_tags)
+        tw.write(rgb, photometric=34892, subfiletype=0, planarconfig="contig")
+        tw.write(preview, photometric="rgb", subfiletype=1)
+        tw.write(ir, photometric="minisblack", subfiletype=0)
+    return rgb
+
+
+def test_silverfast_hdri_dng_ir_page_is_found():
+    """The layout the 4-sample peek misses: RGB and IR are separate pages, so the IR is
+    matched on the *full-res* dims of the LinearRaw SubIFD — not IFD0's thumbnail dims."""
+    from negpy.infrastructure.loaders.rawpy_loader import _peek_hdri_ir_page
+
+    h, w = 40, 24
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "HighDef.dng")
+        _write_silverfast_hdri_dng(path, h, w)
+        ir = _peek_hdri_ir_page(path)
+    assert ir is not None
+    assert ir.shape == (h, w)
+    assert ir.dtype == np.float32
+    assert abs(float(ir.mean()) - (50000.0 / 65535.0)) < 1e-3
+
+
+def test_silverfast_hdri_dng_keeps_the_libraw_decode():
+    """Only the IR is read here: a 3-sample LinearRaw is decoded faithfully by libraw, and
+    staying on the rawpy object keeps the embedded-thumbnail splash and fast preview.
+    rawpy is patched because libraw rejects a hand-built minimal DNG."""
+    from unittest.mock import MagicMock, patch
+
+    h, w = 40, 24
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "HighDef.dng")
+        _write_silverfast_hdri_dng(path, h, w)
+        sentinel = MagicMock(name="rawpy_object")
+        with patch("negpy.infrastructure.loaders.rawpy_loader.rawpy.imread", return_value=sentinel) as imread:
+            ctx_mgr, metadata = LoaderFactory().get_loader(path)
+
+    imread.assert_called_once_with(path)
+    assert ctx_mgr is sentinel, "the RGB must still come from libraw"
+    assert metadata["ir"] is not None
+    assert metadata["ir"].shape == (h, w)
+
+
+def test_hdri_ir_peek_skips_files_without_a_linearraw_frame():
+    """A camera DNG (or any RGB TIFF wearing a .dng name) has no LinearRaw page, so there is
+    no full-res frame to match an IR plane against and the peek must stay out of the way."""
+    from negpy.infrastructure.loaders.rawpy_loader import _peek_hdri_ir_page
+
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "camera.dng")
+        tifffile.imwrite(path, np.full((20, 16, 3), 1000, dtype=np.uint16), photometric="rgb")
+        assert _peek_hdri_ir_page(path) is None
+
+        # ...and a grayscale page alone is not enough: without the frame it could be a B&W scan.
+        mono = os.path.join(td, "mono.dng")
+        tifffile.imwrite(mono, np.full((20, 16), 1000, dtype=np.uint16), photometric="minisblack")
+        assert _peek_hdri_ir_page(mono) is None
+
+
 def test_tiff_loader_silverfast_multipage_ir():
     """SilverFast iSRD: IR stored as page 2 with NewSubfileType=4 (transparency mask)."""
     h, w = 16, 24

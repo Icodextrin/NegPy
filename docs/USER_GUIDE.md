@@ -347,6 +347,7 @@ An **Overlay** button cycles the detection overlay (Off → Marked → IR) so yo
 **IR Removal** — uses the scanner's infrared channel to remove dust invisible to the colour dyes (only enabled when the scan carries an IR plane):
 
 *   Toggle **IR Removal** and set **IR Threshold** (0.05–0.95; lower catches more).
+*   The IR plane is read from 4-channel TIFFs and DNGs (VueScan, NegPy's own scanner output), SilverFast's iSRD TIFFs and 64-bit **HDRi RAW DNGs**, and `_IR.tif` sidecars. Scan to HDRi (not plain HDR) if you want IR data in the file; B&W and Kodachrome block infrared like dust does, so those frames are skipped automatically.
 
 **Manual Heal** (header shows the current spot count):
 

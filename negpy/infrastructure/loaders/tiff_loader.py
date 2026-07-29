@@ -8,20 +8,10 @@ from negpy.domain.models import ColorSpace
 from negpy.kernel.image.logic import srgb_to_linear, uint8_to_float32, uint16_to_float32
 from negpy.infrastructure.loaders.constants import IR_SIDECAR_SUFFIXES, SUPPORTED_TIFF_EXTENSIONS
 from negpy.infrastructure.loaders.helpers import NonStandardFileWrapper, identify_color_space_from_icc, read_orientation
+from negpy.infrastructure.loaders.ir_planes import find_ir_plane, normalize_ir_to_float32
 from negpy.kernel.system.logging import get_logger
 
 logger = get_logger(__name__)
-
-
-def _normalize_ir_to_float32(ir: np.ndarray) -> np.ndarray:
-    """Single-channel uint8/uint16/float ndarray → float32 in [0,1]."""
-    if ir.ndim == 3:
-        ir = ir[:, :, 0]
-    if ir.dtype == np.uint8:
-        return ir.astype(np.float32) * (1.0 / 255.0)
-    if ir.dtype == np.uint16:
-        return ir.astype(np.float32) * (1.0 / 65535.0)
-    return np.clip(ir.astype(np.float32), 0.0, 1.0)
 
 
 def _ir_suffixes(token: str) -> tuple[str, ...]:
@@ -55,7 +45,7 @@ def _read_sidecar_ir(file_path: str) -> Tuple[Optional[np.ndarray], Optional[np.
         return None, None
     try:
         arr = tifffile.imread(candidate)
-        ir = _normalize_ir_to_float32(np.asarray(arr))
+        ir = normalize_ir_to_float32(np.asarray(arr))
     except Exception as e:
         logger.warning(f"Failed to read IR sidecar {candidate}: {e}")
         return None, None
@@ -85,19 +75,11 @@ def _read_sidecar_ir(file_path: str) -> Tuple[Optional[np.ndarray], Optional[np.
 
 
 def _read_ir_from_extra_page(file_path: str, main_h: int, main_w: int) -> Optional[np.ndarray]:
-    """Finds a grayscale page at full resolution — SilverFast iSRD stores IR as page 2 with NewSubfileType=4."""
+    """Finds a grayscale page at full resolution — SilverFast iSRD stores IR as page 2 with
+    NewSubfileType=4. Page 0 is the main image here, so it is never a candidate."""
     try:
         with tifffile.TiffFile(file_path) as tif:
-            for page in tif.pages[1:]:
-                if page.shape != (main_h, main_w):
-                    continue
-                tags = getattr(page, "tags", None) or {}
-                nst = tags.get(254)
-                photometric = getattr(page, "photometric", None)
-                is_mask_page = nst is not None and nst.value == 4
-                is_grayscale = photometric is not None and int(photometric) == 1
-                if is_mask_page or is_grayscale:
-                    return _normalize_ir_to_float32(page.asarray())
+            return find_ir_plane(tif.pages[1:], main_h, main_w)
     except Exception as e:
         logger.warning(f"Failed to read extra-page IR from {file_path}: {e}")
     return None
@@ -136,7 +118,7 @@ def _extract_ir_from_extrasamples(file_path: str, img: np.ndarray) -> Tuple[np.n
 
     is_ir = extrasamples_kind == 0 or not tag_present
     if is_ir:
-        return np.ascontiguousarray(img[:, :, :3]), _normalize_ir_to_float32(img[:, :, 3])
+        return np.ascontiguousarray(img[:, :, :3]), normalize_ir_to_float32(img[:, :, 3])
     return np.ascontiguousarray(img[:, :, :3]), None
 
 
