@@ -143,18 +143,18 @@ class ToneSidebar(BaseSidebar):
         # the general print parameters (Density/Grade) above Paper Response,
         # not inside it: it isn't a paper-character control like Snap/Toe/
         # Shoulder, it's a creative print decision like Density/Grade are.
-        self.density_sat_slider = PowerWarpSlider("Print Saturation", 0.3, 1.6, conf.density_saturation, center=1.0, has_neutral=True)
+        self.density_sat_slider = PowerWarpSlider("Print Saturation", 0.5, 1.5, conf.density_saturation, center=1.0, has_neutral=True)
         self.density_sat_trim_slider = PowerWarpSlider("Print Saturation", -0.4, 0.4, 0.0, center=0.0, has_neutral=True)
         self.density_sat_trim_slider.setToolTip(
             "This layer's Print Saturation trim on top of the global value — pushes/pulls this "
             "channel's density separation independently. Neutrals stay flat at any trim value."
         )
         self.density_sat_trim_slider.setVisible(False)
-        self.dye_mute_slider = CompactSlider("Dye Mute", 0.0, 0.5, conf.density_saturation_damping, has_neutral=True)
+        self.dye_separation_slider = PowerWarpSlider("Dye Separation", -0.5, 0.5, conf.dye_separation, center=0.0, has_neutral=True)
         density_sat_row = QHBoxLayout()
         density_sat_row.addWidget(self.density_sat_slider)
         density_sat_row.addWidget(self.density_sat_trim_slider)
-        density_sat_row.addWidget(self.dye_mute_slider)
+        density_sat_row.addWidget(self.dye_separation_slider)
         self.layout.addLayout(density_sat_row)
 
         paper_header = section_subheader("PAPER RESPONSE")
@@ -229,7 +229,7 @@ class ToneSidebar(BaseSidebar):
             self.paper_combo,
             self.shadow_density_slider,
             self.highlight_density_slider,
-            self.dye_mute_slider,
+            self.dye_separation_slider,
         )
 
     def _open_targets_dialog(self) -> None:
@@ -317,7 +317,7 @@ class ToneSidebar(BaseSidebar):
             (self.shadow_density_slider, "shadow_density"),
             (self.highlight_density_slider, "highlight_density"),
             (self.density_sat_slider, "density_saturation"),
-            (self.dye_mute_slider, "density_saturation_damping"),
+            (self.dye_separation_slider, "dye_separation"),
         ):
             slider.valueChanged.connect(
                 lambda v, f=field: self.update_config_section("exposure", render=True, persist=False, readback_metrics=False, **{f: v})
@@ -416,7 +416,7 @@ class ToneSidebar(BaseSidebar):
             self.sh_w_trim_slider.setVisible(not global_mode)
             self.density_sat_slider.setVisible(global_mode and not is_bw)
             self.density_sat_trim_slider.setVisible(not global_mode and not is_bw)
-            self.dye_mute_slider.setVisible(not is_bw)
+            self.dye_separation_slider.setVisible(not is_bw)
             self.toe_slider.label.setText("Toe" + suffix)
             self.sh_slider.label.setText("Shoulder" + suffix)
             self.midtone_gamma_slider.label.setText("Snap" + suffix)
@@ -456,7 +456,7 @@ class ToneSidebar(BaseSidebar):
             self.shadow_density_slider.setValue(conf.shadow_density)
             self.highlight_density_slider.setValue(conf.highlight_density)
             self.density_sat_slider.setValue(conf.density_saturation)
-            self.dye_mute_slider.setValue(conf.density_saturation_damping)
+            self.dye_separation_slider.setValue(conf.dye_separation)
 
             self.paper_dmin_btn.setChecked(conf.paper_dmin)
             self.paper_black_btn.setChecked(conf.paper_black)
@@ -486,7 +486,7 @@ class ToneSidebar(BaseSidebar):
             self.highlight_density_slider,
             self.density_sat_slider,
             self.density_sat_trim_slider,
-            self.dye_mute_slider,
+            self.dye_separation_slider,
             self.shadow_grade_slider,
             self.highlight_grade_slider,
             self.paper_dmin_btn,

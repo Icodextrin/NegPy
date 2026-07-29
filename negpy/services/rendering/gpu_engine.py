@@ -1132,7 +1132,6 @@ class GPUEngine:
             _reference_linear_value,
             cast_solve_inputs,
             filtration_offsets,
-            grade_saturation_damping,
             per_channel_density_saturation,
             per_channel_toe_shoulder,
             grade_coupled_shape,
@@ -1228,7 +1227,7 @@ class GPUEngine:
             sat = None
         else:
             sat_k3 = per_channel_density_saturation(
-                exp.density_saturation * grade_saturation_damping(slopes[1], exp.density_saturation_damping),
+                exp.density_saturation,
                 (exp.density_saturation_trim_red, exp.density_saturation_trim_green, exp.density_saturation_trim_blue),
             )
             sat = resolve_saturation_matrix(sat_k3)
@@ -1272,14 +1271,16 @@ class GPUEngine:
                 pc["d_max"],
                 pc["toe_sharpness_base"],
                 pc["shoulder_sharpness_base"],
-                # Free slot (ex-width_ref; toeshoulder_width_ref is a WGSL literal).
-                0.0,
+                # Dye Separation strength (was "Free slot ex-width_ref";
+                # toeshoulder_width_ref is a WGSL literal). B&W zeroes here as
+                # well as in the shader's post-curve re-collapse, so both paths
+                # rely on the same guard PhotometricProcessor uses.
+                0.0 if settings.process.process_mode == ProcessMode.BW else float(exp.dye_separation),
                 pc["toe_height"],
                 pc["shoulder_height"],
                 pc["anchor_target_density"],
                 _sw3[1],
-                # Free slot (ex-surround_gamma).
-                0.0,
+                0.0,  # free slot (ex-surround_gamma)
                 mode_val,
                 _reference_linear_value(d_min, paper),
                 _sw3[2],
@@ -1339,11 +1340,10 @@ class GPUEngine:
                 self._sharpen_kernel_key = kernel_key
         l_data = (
             struct.pack(
-                "ffffffffff",
+                "fffffffff",
                 float(lab.sharpen),
                 float(lab.chroma_denoise),
                 float(lab.saturation),
-                float(lab.vibrance),
                 float(lab.glow_amount),
                 float(lab.halation_strength),
                 # Chroma-denoise scales its blur radius by the preview downsample ratio,
@@ -1353,7 +1353,7 @@ class GPUEngine:
                 float(lab.sharpen_masking),
                 1.0 if lab.sharpen_method == SharpenMethod.RL else 0.0,
             )
-            + b"\x00" * 8
+            + b"\x00" * 12
         )
 
         is_bw = 1 if settings.process.process_mode == ProcessMode.BW else 0

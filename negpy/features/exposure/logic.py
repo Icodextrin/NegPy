@@ -88,6 +88,9 @@ def _apply_print_curve_kernel(
     ev_map: np.ndarray,
     ev_scale: np.ndarray,
     use_ev: bool,
+    dye_separation: float = 0.0,
+    dye_separation_scale: float = 0.4,
+    use_dye_separation: bool = False,
     bpc: bool = False,
 ) -> np.ndarray:
     """
@@ -210,6 +213,41 @@ def _apply_print_curve_kernel(
                 dens[0] = d_min_rgb[0] + dye_mix[0, 0] * e0 + dye_mix[0, 1] * e1 + dye_mix[0, 2] * e2
                 dens[1] = d_min_rgb[1] + dye_mix[1, 0] * e0 + dye_mix[1, 1] * e1 + dye_mix[1, 2] * e2
                 dens[2] = d_min_rgb[2] + dye_mix[2, 0] * e0 + dye_mix[2, 1] * e1 + dye_mix[2, 2] * e2
+
+            if use_dye_separation:
+                # The sign flips which pixels the mask selects, not just the
+                # formula: positive targets low spread, negative targets high
+                # spread. Flipping only the formula would push and pull the same
+                # (muted) population and never reach the separated pixels.
+                ve0 = dens[0] - d_min_rgb[0]
+                ve1 = dens[1] - d_min_rgb[1]
+                ve2 = dens[2] - d_min_rgb[2]
+                ve_max = ve0
+                if ve1 > ve_max:
+                    ve_max = ve1
+                if ve2 > ve_max:
+                    ve_max = ve2
+                ve_min = ve0
+                if ve1 < ve_min:
+                    ve_min = ve1
+                if ve2 < ve_min:
+                    ve_min = ve2
+                spread = ve_max - ve_min
+                # spread >= 0 always, so a plain sigmoid never reaches its 0 end
+                # (sigmoid(0) = 0.5, not 0) -- rescale so s is exactly 0 at
+                # spread=0 and approaches 1 as spread grows, so the mask reaches
+                # its true target-population strength at the boundary instead of
+                # topping out at half-strength there.
+                s = 2.0 * _fast_sigmoid(spread / dye_separation_scale) - 1.0
+                if dye_separation >= 0.0:
+                    mask = 1.0 - s
+                else:
+                    mask = s
+                k = 1.0 + dye_separation * mask
+                ve_mean = (ve0 + ve1 + ve2) / 3.0
+                dens[0] = d_min_rgb[0] + ve_mean + k * (ve0 - ve_mean)
+                dens[1] = d_min_rgb[1] + ve_mean + k * (ve1 - ve_mean)
+                dens[2] = d_min_rgb[2] + ve_mean + k * (ve2 - ve_mean)
 
             for ch in range(3):
                 transmittance = 10.0 ** (-dens[ch])
@@ -503,6 +541,7 @@ def apply_characteristic_curve(
     highlight_grade_deltas: Tuple[float, float, float] = (0.0, 0.0, 0.0),
     density_saturation: float = 1.0,
     density_saturation_trims: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+    dye_separation: float = 0.0,
 ) -> ImageBuffer:
     """Applies the asymmetric H&D print curve per channel in log-density space.
 
@@ -510,7 +549,10 @@ def apply_characteristic_curve(
     applies per-pixel dodge/burn as print-exposure offsets ahead of the curve.
 
     density_saturation(_trims): density-domain saturation, composed into the
-    dye_mix slot (see resolve_saturation_matrix/compose_density_matrices)."""
+    dye_mix slot (see resolve_saturation_matrix/compose_density_matrices).
+
+    dye_separation: signed per-pixel spread rescale applied in the kernel after
+    dye_mix (see _apply_print_curve_kernel)."""
     c = effective_constants(paper)
     ts = c["toe_shoulder_strength"]
     if midtone_gamma is None:
@@ -567,6 +609,9 @@ def apply_characteristic_curve(
         ev_map=ev_arr,
         ev_scale=np.ascontiguousarray(np.array(ev_scale, dtype=np.float32)),
         use_ev=use_ev,
+        dye_separation=float(dye_separation),
+        dye_separation_scale=float(c["dye_separation_spread_scale"]),
+        use_dye_separation=dye_separation != 0.0,
         bpc=bool(bpc),
     )
     return ensure_image(res)
@@ -644,21 +689,6 @@ def per_channel_density_saturation(
         _clamp(density_saturation + trims[1]),
         _clamp(density_saturation + trims[2]),
     )
-
-
-def grade_saturation_damping(slope_g: float, strength: float) -> float:
-    """
-    Grade-tracking scale on density_saturation, countering the density
-    separation a harder grade opens up between the three layers:
-    damp = (slope_min / slope)^strength. Exactly 1.0 at strength 0 or the
-    softest slope; monotonically decreasing in slope and strength. Uses the
-    green (reference) slope so it stays a single global scalar.
-    """
-    from negpy.features.exposure.models import EXPOSURE_CONSTANTS
-
-    c = EXPOSURE_CONSTANTS
-    s = min(max(float(slope_g), c["slope_min"]), c["slope_max"])
-    return float((c["slope_min"] / s) ** max(float(strength), 0.0))
 
 
 def slope_to_grade(slope: float, density_range: Optional[float]) -> float:

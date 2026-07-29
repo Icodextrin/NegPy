@@ -98,7 +98,9 @@ class ExposureConfig:
     density_saturation_trim_red: float = 0.0
     density_saturation_trim_green: float = 0.0
     density_saturation_trim_blue: float = 0.0
-    density_saturation_damping: float = 0.0
+    # Signed, per pixel: >0 spreads the three dye densities on muted pixels, <0
+    # pulls them together on already-separated ones. 0.0 = off.
+    dye_separation: float = 0.0
 
     def __post_init__(self) -> None:
         """
@@ -293,6 +295,10 @@ EXPOSURE_CONSTANTS: Dict[str, Any] = {
     # Density half-width over which the midtone gamma boost eases to the tails.
     # ↑ wider, more gradual S; ↓ tighter, more localized midtone boost.
     "paper_gamma_width": 0.6,
+    # Sigmoid half-point of the Dye Separation mask, in density units of
+    # e0/e1/e2 spread. Inlined as a WGSL literal in exposure.wgsl — change both.
+    # ↑ counts more pixels as muted; ↓ narrower muted band.
+    "dye_separation_spread_scale": 0.4,
 }
 
 # Auto Density / Auto Grade targets the user can retune (Set Targets dialog).
