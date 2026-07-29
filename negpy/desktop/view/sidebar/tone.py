@@ -139,11 +139,7 @@ class ToneSidebar(BaseSidebar):
 
         # Density-domain saturation: composed into the same dye_mix slot as the
         # paper's real dye crosstalk, rather than a post-hoc Lab-space a*/b*
-        # scale — see the density-space color investigation notes. Lives with
-        # the general print parameters (Density/Grade) above Paper Response,
-        # not inside it: it isn't a paper-character control like Snap/Toe/
-        # Shoulder, it's a creative print decision like Density/Grade are.
-        self.dye_separation_slider = CompactSlider("Dye Separation", 0.25, 1.75, conf.dye_separation, has_neutral=True)
+        self.dye_separation_slider = CompactSlider("Dye Separation", 0.5, 1.5, conf.dye_separation, has_neutral=True)
         self.dye_separation_trim_slider = CompactSlider("Dye Separation", -0.4, 0.4, 0.0, has_neutral=True)
         self.dye_separation_trim_slider.setToolTip(
             "This layer's Dye Separation trim on top of the global value — pushes/pulls this "
