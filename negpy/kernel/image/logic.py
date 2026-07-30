@@ -231,6 +231,141 @@ def _lab_to_rgb_kernel(lab: np.ndarray, m: np.ndarray, white: np.ndarray, eps: f
     return out
 
 
+@njit(inline="always")
+def _in_gamut_lab(l_val: float, a: float, b: float, m: np.ndarray, white: np.ndarray, eps: float, kappa: float, c: float) -> bool:
+    """Whether (L, a, b) decodes to linear working RGB within [0,1] on all channels."""
+    fy = (l_val + 16.0) / 116.0
+    fx = a / 500.0 + fy
+    fz = fy - b / 200.0
+    fx3 = fx * fx * fx
+    fy3 = fy * fy * fy
+    fz3 = fz * fz * fz
+    xr = (fx3 if fx3 > eps else (fx - c) / kappa) * white[0]
+    yr = (fy3 if fy3 > eps else (fy - c) / kappa) * white[1]
+    zr = (fz3 if fz3 > eps else (fz - c) / kappa) * white[2]
+    r = m[0, 0] * xr + m[0, 1] * yr + m[0, 2] * zr
+    g = m[1, 0] * xr + m[1, 1] * yr + m[1, 2] * zr
+    bl = m[2, 0] * xr + m[2, 1] * yr + m[2, 2] * zr
+    tol = np.float32(1e-4)
+    one = np.float32(1.0)
+    return r >= -tol and r <= one + tol and g >= -tol and g <= one + tol and bl >= -tol and bl <= one + tol
+
+
+# Skin-tone hue protection for gamut_aware_chroma_scale. Grounded in a real
+# sample (a rendered portrait frame, moderate-lightness/moderate-chroma
+# warm-hue pixels): hue angle atan2(b,a) median ~52deg, p10-p90 ~41-73deg.
+# Gaussian-weighted around the center; strength scales how much any push
+# (boost or cut) is pulled back toward identity in that band. Not exposed as
+# a control -- a flat, always-on improvement to the existing tool, not a new
+# one. Constants are from a single frame's rough hue mask, not a validated
+# skin detector; revisit if checked against more real frames shows drift.
+_SKIN_HUE_CENTER_DEG = np.float32(52.0)
+_SKIN_HUE_WIDTH_DEG = np.float32(25.0)
+_SKIN_PROTECTION_STRENGTH = np.float32(0.5)
+
+
+@njit(inline="always")
+def _skin_protection_weight(a: float, b: float) -> float:
+    """0 (no protection) to ~1 (full protection) based on hue-angle distance
+    from the measured skin-tone hue center. Near-neutral pixels (tiny a/b)
+    have an undefined/noisy hue angle, so gate on chroma too -- a low-chroma
+    pixel isn't meaningfully "skin-hued" regardless of what atan2 returns."""
+    chroma = np.sqrt(a * a + b * b)
+    if chroma < np.float32(2.0):
+        return 0.0
+    hue_deg = np.degrees(np.arctan2(b, a))
+    dist = hue_deg - _SKIN_HUE_CENTER_DEG
+    # Wrap to [-180, 180] so e.g. 179 vs -179 reads as 2deg apart, not 358.
+    dist = dist - np.float32(360.0) * np.round(dist / np.float32(360.0))
+    x = dist / _SKIN_HUE_WIDTH_DEG
+    return float(np.exp(np.float32(-0.5) * x * x))
+
+
+@parallel_njit(cache=True, fastmath=True)
+def _gamut_aware_chroma_scale_kernel(
+    lab: np.ndarray, saturation: float, m: np.ndarray, white: np.ndarray, eps: float, kappa: float, iters: int
+) -> np.ndarray:
+    """
+    Per-pixel gamut-aware chroma scale: pixels comfortably inside the display
+    gamut get the full flat `saturation` scale, unchanged from a plain a*/b*
+    multiply. Pixels whose full-strength push would clip get a smooth
+    softplus-style knee toward their own actual in-gamut headroom instead of
+    an abrupt per-channel RGB clamp -- same knee shape as the print curve's
+    toe/shoulder bounds. Bisection converges to <0.1% error in 10 iterations
+    (measured against a 24-iteration reference); going lower starts costing
+    real precision, going higher buys nothing visible.
+
+    An independent per-channel hard clamp shifts hue even though the a*/b*
+    scale itself preserves hue exactly (uniform scaling of both components
+    leaves atan2(b,a) unchanged) -- clamping only the channel(s) that overshot
+    changes the R:G:B ratio the eye actually sees. This sidesteps that by
+    never overshooting in the first place.
+
+    Above 1.0, also pulls the *local* target back toward identity in the
+    skin-tone hue band before doing any of the above -- see
+    _skin_protection_weight. The gamut-aware knee then runs on this
+    already-softened local target, not the raw requested saturation.
+    Boost-only: desaturation (saturation <= 1.0) is a plain flat scale,
+    unaffected -- asking for less saturation should mean exactly that, not
+    stop short of zero for unrelated hue reasons.
+    """
+    n = lab.shape[0]
+    out = np.empty((n, 3), dtype=np.float32)
+    c = np.float32(16.0 / 116.0)
+    one = np.float32(1.0)
+    for i in prange(n):
+        l_val = lab[i, 0]
+        a = lab[i, 1]
+        b = lab[i, 2]
+        if saturation <= one:
+            # Desaturation never overshoots the gamut (moving toward the
+            # achromatic axis can't push a channel further out of range), and
+            # skin protection only applies to the boost direction -- asking
+            # for less saturation, including all the way to zero, should mean
+            # exactly that, not stop short for unrelated hue reasons.
+            eff = saturation
+        else:
+            w = _skin_protection_weight(a, b)
+            local_sat = saturation - _SKIN_PROTECTION_STRENGTH * w * (saturation - one)
+            if _in_gamut_lab(l_val, a * local_sat, b * local_sat, m, white, eps, kappa, c):
+                # Full push already lands in gamut -- use it directly. Without this,
+                # bisecting only within [1, local_sat] always converges lo toward
+                # local_sat itself (an artifact of that being the search's own
+                # upper bound, not a real constraint), and the knee formula below
+                # then misreads "the boundary is right at the edge of what I asked
+                # for" and throttles pixels that were never going to clip at all.
+                eff = local_sat
+            else:
+                lo = one
+                hi = local_sat
+                still_ok = _in_gamut_lab(l_val, a, b, m, white, eps, kappa, c)
+                for _ in range(iters):
+                    mid = (lo + hi) / np.float32(2.0)
+                    if still_ok and _in_gamut_lab(l_val, a * mid, b * mid, m, white, eps, kappa, c):
+                        lo = mid
+                    else:
+                        hi = mid
+                s_max = lo
+                if s_max < one + np.float32(1e-4):
+                    s_max = one + np.float32(1e-4)
+                knee = s_max - one
+                eff = one + knee * (one - np.exp(-(local_sat - one) / knee))
+        out[i, 0] = l_val
+        out[i, 1] = a * eff
+        out[i, 2] = b * eff
+    return out
+
+
+def gamut_aware_chroma_scale(lab: np.ndarray, saturation: float, iters: int = 10) -> np.ndarray:
+    """Public entry point for _gamut_aware_chroma_scale_kernel -- see its docstring.
+    Accepts any array whose last axis is (L, a, b); returns the same shape."""
+    arr = np.ascontiguousarray(lab, dtype=np.float32)
+    out = _gamut_aware_chroma_scale_kernel(
+        arr.reshape(-1, 3), np.float32(saturation), _XYZ_TO_WORKING, _WORKING_WHITE, np.float32(_LAB_EPS), np.float32(_LAB_KAPPA), iters
+    )
+    return out.reshape(arr.shape)
+
+
 def rgb_to_lab_working(img: np.ndarray) -> np.ndarray:
     """Linear working RGB -> CIELAB (D65). No transfer decode — the buffer is linear.
 

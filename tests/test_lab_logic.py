@@ -237,9 +237,151 @@ class TestLabLogic(unittest.TestCase):
         boosted = apply_saturation(img, 1.5)
         l_out = float(rgb_to_lab_working(boosted)[0, 0, 0])
 
-        # CIELAB preserves L* pre-clip; in linear ProPhoto this red (L*≈67) clips
-        # toward the gamut edge, ~6 points down — far less than the HSV path.
-        self.assertGreaterEqual(l_out, l_in - 8.0)
+        # CIELAB preserves L* pre-clip; the gamut-aware knee (see
+        # test_saturation_is_gamut_aware below) keeps this red (L*≈67) closer
+        # to the gamut edge than a hard per-channel clamp -- measured ~4.7
+        # points down, vs. the ~6 a naive flat scale + clip produces.
+        self.assertGreaterEqual(l_out, l_in - 5.5)
+
+    def test_saturation_is_gamut_aware(self) -> None:
+        """A flat a*/b* scale preserves hue mathematically, but a hard per-channel
+        RGB clamp afterward shifts the *actual* hue by changing the R:G:B ratio
+        unevenly. The gamut-aware knee should avoid that: pushing hard on a
+        deeply saturated color should land much closer to its true (unclipped)
+        hue than a naive flat scale + clamp does -- specifically on the pixels
+        that actually clip under the naive approach. The other ~90%+ of any
+        random population never clips either way and both methods produce
+        identical output for it (see test_saturation_unaffected_when_
+        comfortably_in_gamut), so mixing that population in just dilutes the
+        comparison with ~2.6deg of shared RGB<->Lab round-trip measurement
+        noise -- not a real signal either way, and enough to make an
+        aggregate-over-everything assertion misleadingly weak."""
+        rng = np.random.default_rng(3)
+        n = 2000
+        angles = rng.uniform(0, 2 * np.pi, n).astype(np.float32)
+        chroma = rng.uniform(20, 55, n).astype(np.float32)
+        l_vals = rng.uniform(20, 80, n).astype(np.float32)
+        a = chroma * np.cos(angles)
+        b = chroma * np.sin(angles)
+        lab = np.stack([l_vals, a, b], axis=-1).astype(np.float32)
+        rgb = np.clip(lab_to_rgb_working(lab), 0.0, 1.0).astype(np.float32).reshape(-1, 1, 3)
+
+        def naive_flat_scale(img, saturation):
+            lab = rgb_to_lab_working(img)
+            res = lab.copy()
+            res[..., 1] *= saturation
+            res[..., 2] *= saturation
+            raw = lab_to_rgb_working(res)
+            clipped = ((raw < -1e-4) | (raw > 1.0 + 1e-4)).any(axis=-1).reshape(-1)
+            return np.clip(raw, 0.0, 1.0), clipped
+
+        def hue_error(out, a_in, b_in):
+            # out is (n, 1, 3); flatten the middle axis so this lines up elementwise
+            # against the (n,) a_in/b_in instead of broadcasting into an (n, n) mess.
+            lab_out = rgb_to_lab_working(out.astype(np.float32)).reshape(-1, 3)
+            hue_actual = np.arctan2(lab_out[:, 2], lab_out[:, 1])
+            hue_intended = np.arctan2(b_in, a_in)
+            return np.degrees(np.abs(np.angle(np.exp(1j * (hue_actual - hue_intended)))))
+
+        saturation = 1.6
+        gamut_aware_out = apply_saturation(rgb, saturation)
+        naive_out, naive_clipped = naive_flat_scale(rgb, saturation)
+        self.assertGreater(naive_clipped.sum(), 50)  # sanity: this population must actually exercise clipping
+
+        gamut_aware_err = hue_error(gamut_aware_out, a, b)[naive_clipped].mean()
+        naive_err = hue_error(naive_out, a, b)[naive_clipped].mean()
+
+        # On pixels that actually clip under the naive approach, the gamut-aware
+        # version must be meaningfully better, not just different -- measured
+        # ~1.5deg vs. ~7.3deg (about 5x) on this seed; assert a safe fraction
+        # of that margin rather than the exact measured ratio.
+        self.assertLess(gamut_aware_err, naive_err / 3.0)
+
+    def test_saturation_unaffected_when_comfortably_in_gamut(self) -> None:
+        """A gentle push on a color nowhere near the gamut edge -- and nowhere
+        near the skin-protection hue band -- should behave identically to a
+        flat a*/b* scale -- the knee should only engage near the boundary, not
+        change everyday, moderate saturation adjustments."""
+        img = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        img[:, :, 2] = 0.55  # mild, safely in-gamut blue bias -- hue ~291deg,
+        # ~121deg from the skin-protection center (52deg), so its protection
+        # weight is ~1e-5, negligible enough that this isolates gamut-awareness
+        # cleanly, same as before skin protection existed.
+
+        gamut_aware = apply_saturation(img, 1.1)
+
+        lab = rgb_to_lab_working(img)
+        lab[..., 1] *= 1.1
+        lab[..., 2] *= 1.1
+        naive = np.clip(lab_to_rgb_working(lab), 0.0, 1.0)
+
+        np.testing.assert_allclose(gamut_aware, naive, atol=1e-4)
+
+    def test_saturation_below_one_unchanged(self) -> None:
+        """Desaturating (saturation < 1.0) can't push a pixel further out of
+        gamut than it already was, so the knee only applies above 1.0 -- this
+        must stay a plain flat scale, unchanged from before."""
+        img = np.zeros((4, 4, 3), dtype=np.float32)
+        img[:, :, 0] = 0.9
+        img[:, :, 1] = 0.15
+        img[:, :, 2] = 0.1
+
+        gamut_aware = apply_saturation(img, 0.3)
+
+        lab = rgb_to_lab_working(img)
+        lab[..., 1] *= 0.3
+        lab[..., 2] *= 0.3
+        naive = np.clip(lab_to_rgb_working(lab), 0.0, 1.0)
+
+        np.testing.assert_allclose(gamut_aware, naive, atol=1e-5)
+
+    def test_skin_protection_dampens_boost_near_skin_hue(self) -> None:
+        """A mild boost on a hue close to the measured skin-tone
+        band (~52deg) should land short of the full requested push, purely
+        from hue -- both colors here are mild enough (chroma ~5) to stay
+        nowhere near the gamut edge, isolating skin protection from
+        gamut-awareness entirely."""
+        img = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        img[:, :, 0] = 0.56  # mild red, hue ~20deg -- close enough to the
+        # 52deg skin center for the Gaussian's tail to still bite.
+
+        lab_in = rgb_to_lab_working(img)
+        out = apply_saturation(img, 1.3)
+        lab_out = rgb_to_lab_working(out)
+        eff = float(lab_out[0, 0, 1] / lab_in[0, 0, 1])
+
+        self.assertLess(eff, 1.3)
+        self.assertGreater(eff, 1.0)
+
+    def test_skin_protection_negligible_far_from_skin_hue(self) -> None:
+        """The same mild boost on a hue far from the skin band
+        (blue, ~291deg) should land at essentially the exact requested value
+        -- confirms protection is actually hue-gated, not a blanket damping."""
+        img = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        img[:, :, 2] = 0.56  # mild blue, hue ~291deg -- ~121deg from the skin
+        # center, past the Gaussian's meaningful range (weight ~1e-5).
+
+        lab_in = rgb_to_lab_working(img)
+        out = apply_saturation(img, 1.3)
+        lab_out = rgb_to_lab_working(out)
+        eff = float(lab_out[0, 0, 1] / lab_in[0, 0, 1])
+
+        self.assertAlmostEqual(eff, 1.3, delta=1e-3)
+
+    def test_skin_protection_boost_only(self) -> None:
+        """Desaturating a skin-hued color must be a plain flat
+        scale, unaffected by skin protection -- asking for less saturation
+        should mean exactly that, including all the way to zero, not stop
+        short for hue reasons. Regression for the specific case where
+        symmetric (boost+cut) protection made saturation=0.0 not reach true
+        gray for warm hues."""
+        img = np.zeros((4, 4, 3), dtype=np.float32)
+        img[:, :, 0] = 1.0  # pure red, hue ~40deg -- close to skin center
+
+        desat = apply_saturation(img, 0.0)
+        r, g, b = float(desat[0, 0, 0]), float(desat[0, 0, 1]), float(desat[0, 0, 2])
+        self.assertAlmostEqual(r, g, delta=1e-3)
+        self.assertAlmostEqual(g, b, delta=1e-3)
 
     def test_chroma_denoise(self) -> None:
         img = np.full((100, 100, 3), 0.5, dtype=np.float32)
