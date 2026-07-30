@@ -62,7 +62,12 @@ class _ScanService:
 
 
 class _BatchService:
-    """Records per-frame scans; returns a frame-numbered path from write_result."""
+    """Records per-frame scans; returns a frame-numbered path from write_result.
+
+    Stands in for ScannerService: `open_session` hands back itself as the held
+    session (one open for the whole batch, not one per frame — see run_batch),
+    and `run_session_scan`/`lock_exposure`/`close` record how the worker used it.
+    """
 
     def __init__(self, *, fail_on: int | None = None, cancel_before: int | None = None) -> None:
         self.fail_on = fail_on
@@ -72,12 +77,28 @@ class _BatchService:
         self.windows: list = []
         self.offsets: list[float] = []
         self.eject_calls: list[str] = []
+        self.session_open_calls: list[str] = []
+        self.session_open_lock_white_balance: list[bool] = []
+        self.session_close_calls = 0
+        self.lock_exposure_calls = 0
 
     def eject(self, device_id: str) -> bool:
         self.eject_calls.append(device_id)
         return True
 
-    def run_scan(self, device_id, params, progress, cancel):
+    def open_session(self, device_id: str, *, lock_white_balance: bool = False) -> "_BatchService":
+        self.session_open_calls.append(device_id)
+        self.session_open_lock_white_balance.append(lock_white_balance)
+        return self
+
+    def close(self) -> None:
+        self.session_close_calls += 1
+
+    def lock_exposure(self) -> None:
+        self.lock_exposure_calls += 1
+
+    def run_session_scan(self, session, params, progress, cancel):
+        assert session is self
         if self.cancel_before is not None and params.frame == self.cancel_before:
             cancel.set()
         self.frames.append(params.frame)
@@ -104,7 +125,7 @@ def _scan_request() -> ScanRequest:
     )
 
 
-def _batch_request(frames=(2, 3, 4), frame_windows=None) -> BatchRequest:
+def _batch_request(frames=(2, 3, 4), frame_windows=None, lock_white_balance=False, lock_exposure=False) -> BatchRequest:
     return BatchRequest(
         device_id="coolscan3:test",
         params=ScanParams(dpi=4_000, depth=16, capture_ir=False),
@@ -113,6 +134,8 @@ def _batch_request(frames=(2, 3, 4), frame_windows=None) -> BatchRequest:
         output_format="TIFF",
         frames=tuple(frames),
         frame_windows=frame_windows or {},
+        lock_white_balance=lock_white_balance,
+        lock_exposure=lock_exposure,
     )
 
 
@@ -382,6 +405,62 @@ def test_run_batch_scans_an_explicit_frame_subset() -> None:
 
     assert service.frames == [1, 2, 4, 6]
     assert service.written_seqs == [1, 2, 4, 6]
+
+
+def test_run_batch_opens_one_session_for_the_whole_range() -> None:
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(_batch_request((2, 3, 4)))
+
+    assert service.session_open_calls == ["coolscan3:test"]  # once, not per frame
+    assert service.session_close_calls == 1
+
+
+def test_run_batch_locks_exposure_once_after_the_first_frame_when_requested() -> None:
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(_batch_request((2, 3, 4), lock_exposure=True))
+
+    assert service.lock_exposure_calls == 1
+
+
+def test_run_batch_passes_lock_white_balance_intent_to_open_session() -> None:
+    """The session must know up front, not get it after the fact — a backend
+    (nkscan) uses this to hold white balance during frame 1's own metering,
+    which lock_exposure()'s later gain freeze cannot retroactively fix."""
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(_batch_request((2, 3, 4), lock_white_balance=True))
+
+    assert service.session_open_lock_white_balance == [True]
+
+
+def test_run_batch_lock_white_balance_and_lock_exposure_are_independent() -> None:
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(_batch_request((2, 3, 4), lock_white_balance=True, lock_exposure=False))
+
+    assert service.session_open_lock_white_balance == [True]
+    assert service.lock_exposure_calls == 0
+
+
+def test_run_batch_does_not_lock_anything_by_default() -> None:
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(_batch_request((2, 3, 4)))
+
+    assert service.lock_exposure_calls == 0
+    assert service.session_open_lock_white_balance == [False]
 
 
 def test_run_batch_applies_per_frame_windows_falling_back_to_base() -> None:

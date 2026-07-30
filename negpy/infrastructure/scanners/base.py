@@ -33,6 +33,9 @@ class ScannerCapabilities:
     adapter_frame_control: bool = False
     can_eject: bool = False
     frame_pitch_mm: float = 0.0  # feed-axis distance between frame positions; 0.0 = unknown
+    multisample: tuple[int, ...] = (1,)  # supported multisample factors; (1,) = no averaging option
+    single_line: bool = False  # device offers a single-line CCD scan mode
+    supports_exposure_lock: bool = False  # session.lock_exposure() actually freezes something
 
 
 @dataclass(frozen=True)
@@ -58,6 +61,13 @@ class ScannerSession(Protocol):
         progress: Callable[[float], None],
         cancel: threading.Event,
     ) -> ScanResult: ...
+    def lock_exposure(self) -> None:
+        """Freeze whatever exposure the last scan settled on for the rest of this session.
+
+        No-op on a transport with nothing to freeze.
+        """
+        ...
+
     def eject(self) -> bool: ...
     def close(self) -> None: ...
     def __enter__(self) -> "ScannerSession": ...
@@ -91,5 +101,11 @@ class ScannerBackend(Protocol):
         progress: Callable[[float], None],
         cancel: threading.Event,
     ) -> ScanResult: ...
-    def open_session(self, device_id: str) -> ScannerSession: ...
+    def open_session(self, device_id: str, *, lock_white_balance: bool = False) -> ScannerSession:
+        """Open an exclusive session. `lock_white_balance` is the caller's intent to hold
+        white balance during this session's own metering, independent of the later
+        lock_exposure() gain freeze — a backend with no cast-preserving metering option
+        may ignore it."""
+        ...
+
     def eject(self, device_id: str) -> bool: ...

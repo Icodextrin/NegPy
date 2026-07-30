@@ -41,6 +41,13 @@ class _Factory(Protocol):
         """
         ...
 
+    def transient_error(self) -> Exception:
+        """A sample exception this backend's own scan() treats as transient.
+
+        What counts as "transient" is backend-specific — not a shared literal.
+        """
+        ...
+
 
 # ── the SANE entry ────────────────────────────────────────────────────────
 
@@ -71,21 +78,75 @@ class _ModuleWithDevice(FakeSaneModule):
         return [(self.device_id, "Nikon", "LS-50")]
 
 
-def _sane_backend(
-    *,
-    scan_error: Exception | None = None,
-    with_eject: bool = False,
-    film: bool = True,
-    progress_steps: int = 0,
-) -> tuple[Any, str]:
-    # A non-film transport is spelled as a flatbed id with no `source` option, so
-    # nothing infers film sources for it.
-    device_id = _DEV_ID if film else "epson2:libusb:001:002"
-    dev = _ContractDev(_opt_map(eject=with_eject), scan_error, progress_steps)
-    return _make_backend(_ModuleWithDevice(dev, device_id)), device_id
+class _SaneBackendFactory:
+    def __call__(
+        self,
+        *,
+        scan_error: Exception | None = None,
+        with_eject: bool = False,
+        film: bool = True,
+        progress_steps: int = 0,
+    ) -> tuple[Any, str]:
+        # A non-film transport is spelled as a flatbed id with no `source` option, so
+        # nothing infers film sources for it.
+        device_id = _DEV_ID if film else "epson2:libusb:001:002"
+        dev = _ContractDev(_opt_map(eject=with_eject), scan_error, progress_steps)
+        return _make_backend(_ModuleWithDevice(dev, device_id)), device_id
+
+    def transient_error(self) -> Exception:
+        # A string match against SANE's own stable status text (see
+        # sane_backend._TRANSIENT_IO_MARKERS), not a shared literal.
+        return RuntimeError("Error during device I/O")
 
 
-BACKENDS: list[tuple[str, _Factory]] = [("sane", _sane_backend)]
+_sane_backend = _SaneBackendFactory()
+
+
+# ── the nkscan entry ──────────────────────────────────────────────────────
+
+
+class _NkscanBackendFactory:
+    def __call__(
+        self,
+        *,
+        scan_error: Exception | None = None,
+        with_eject: bool = False,
+        film: bool = True,
+        progress_steps: int = 0,
+    ) -> tuple[Any, str]:
+        import sys
+
+        from negpy.infrastructure.scanners.nkscan_backend import NkscanBackend
+        from tests.scanners.test_nkscan_backend import _DEV_ID as _NKSCAN_DEV_ID
+        from tests.scanners.test_nkscan_backend import FakeCapabilities, FakeDevice, FakeNkscanModule, FakeSession
+
+        # nkscan devices are always dedicated film scanners; a "no film sources"
+        # transport is spelled as the module reporting no devices at all.
+        caps = FakeCapabilities(can_eject=with_eject)
+        devices = [FakeDevice(_NKSCAN_DEV_ID, "Nikon", "LS-50", caps)] if film else []
+        session = FakeSession(
+            _NKSCAN_DEV_ID,
+            scan_error=scan_error,
+            capabilities=caps,
+            progress_steps=max(progress_steps, 1),
+        )
+        module = FakeNkscanModule(devices=devices, session=session)
+        # Process-global and deliberately left in place (not monkeypatch-scoped): every
+        # caller either goes through this factory again or test_nkscan_backend.py's own
+        # fixture, both of which reassign sys.modules["nkscan"] fresh before use.
+        sys.modules["nkscan"] = module  # type: ignore[assignment]
+        return NkscanBackend(), _NKSCAN_DEV_ID
+
+    def transient_error(self) -> Exception:
+        from tests.scanners.test_nkscan_backend import _TransientError
+
+        return _TransientError("USB glitch")
+
+
+_nkscan_backend = _NkscanBackendFactory()
+
+
+BACKENDS: list[tuple[str, _Factory]] = [("sane", _sane_backend), ("nkscan", _nkscan_backend)]
 
 pytestmark = pytest.mark.parametrize("name,make_backend", BACKENDS)
 
@@ -146,8 +207,12 @@ def test_progress_stays_within_the_unit_range(name: str, make_backend: _Factory)
 
 
 def test_transport_glitches_are_typed_transient(name: str, make_backend: _Factory) -> None:
-    """The service retries on type alone — it must not have to read messages."""
-    backend, device_id = make_backend(scan_error=RuntimeError("Error during device I/O"))
+    """The service retries on type alone — it must not have to read messages.
+
+    What counts as "transient" is each backend's own call — `.transient_error()`
+    is a sample of whatever that backend's factory attaches, not a shared literal.
+    """
+    backend, device_id = make_backend(scan_error=make_backend.transient_error())
 
     with pytest.raises(TransientScanError):
         backend.scan(device_id, _PARAMS, lambda _: None, threading.Event())

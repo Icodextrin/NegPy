@@ -9,12 +9,19 @@ def _make_sane() -> ScannerBackend:
     return SaneBackend()
 
 
+def _make_nkscan() -> ScannerBackend:
+    from negpy.infrastructure.scanners.nkscan_backend import NkscanBackend
+
+    return NkscanBackend()
+
+
 DEFAULT_BACKEND_ID = "sane"
 
 # id -> (display label, factory). Insertion order drives the sidebar dropdown.
 # Adding a backend is one entry here plus its implementation module.
 BACKENDS: dict[str, tuple[str, Callable[[], ScannerBackend]]] = {
     "sane": ("SANE", _make_sane),
+    "nkscan": ("nkscan (Coolscan)", _make_nkscan),
 }
 
 

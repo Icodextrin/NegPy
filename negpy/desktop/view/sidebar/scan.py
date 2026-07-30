@@ -1,5 +1,5 @@
 import qtawesome as qta
-from PyQt6.QtCore import Qt, pyqtSlot
+from PyQt6.QtCore import pyqtSlot
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -128,6 +128,23 @@ class ScanSidebar(QWidget):
         depth_row.addWidget(self.ir_check)
         self.form.addRow("Depth", depth_row)
 
+        # Multisample averaging / single-line CCD (nkscan-specific — hidden entirely
+        # on devices that don't report either capability).
+        quality_row = QHBoxLayout()
+        quality_row.setContentsMargins(0, 0, 0, 0)
+        self.multisample_combo = QComboBox()
+        self.multisample_combo.setToolTip("Multisample averaging (trades scan time for noise)")
+        self.single_line_check = QCheckBox("Single-line")
+        self.single_line_check.setToolTip("Single-line CCD mode (slower, may reduce banding)")
+        quality_row.addWidget(self.multisample_combo, 1)
+        quality_row.addWidget(self.single_line_check)
+        self.quality_row_widget = QWidget()
+        self.quality_row_widget.setLayout(quality_row)
+        self.quality_row_label = QLabel("Quality")
+        self.form.addRow(self.quality_row_label, self.quality_row_widget)
+        self.quality_row_label.setVisible(False)
+        self.quality_row_widget.setVisible(False)
+
         # Spanning rows (no label column) so the checkboxes sit at the left edge.
         self.autofocus_check = QCheckBox("Autofocus")
         self.autofocus_check.setChecked(True)
@@ -137,6 +154,19 @@ class ScanSidebar(QWidget):
         self.ae_check = QCheckBox("Auto-exposure")
         self.ae_check.setToolTip("Meter exposure in hardware before the scan")
         self.form.addRow(self.ae_check)
+
+        # nkscan-specific, independent controls — only meaningful once a frame
+        # range exists. Lock WB affects every frame's own metering; lock exposure
+        # freezes the numeric gain frame 1 settles on for the rest of the batch.
+        self.lock_white_balance_check = QCheckBox("Lock white balance")
+        self.lock_white_balance_check.setToolTip("Hold white balance during metering, so film keeps its cast instead of scanning neutral")
+        self.form.addRow(self.lock_white_balance_check)
+        self.lock_white_balance_check.setVisible(False)
+
+        self.lock_exposure_check = QCheckBox("Lock exposure across batch")
+        self.lock_exposure_check.setToolTip("Meter the first frame, then hold that exact exposure for the rest of the batch")
+        self.form.addRow(self.lock_exposure_check)
+        self.lock_exposure_check.setVisible(False)
 
         # Frame range (roll/strip feeders only — shown when a live capacity is known).
         self.frame_range_widget = QWidget()
@@ -225,6 +255,9 @@ class ScanSidebar(QWidget):
         self.pattern_edit.setText(self._settings.filename_pattern)
         self.autofocus_check.setChecked(self._settings.autofocus)
         self.ae_check.setChecked(self._settings.auto_exposure)
+        self.single_line_check.setChecked(self._settings.single_line)
+        self.lock_white_balance_check.setChecked(self._settings.lock_white_balance)
+        self.lock_exposure_check.setChecked(self._settings.lock_exposure)
 
     def _connect_signals(self) -> None:
         self.refresh_btn.clicked.connect(self._on_refresh)
@@ -241,6 +274,10 @@ class ScanSidebar(QWidget):
         self.ir_check.toggled.connect(lambda: self._update_settings_from_ui())
         self.autofocus_check.toggled.connect(lambda: self._update_settings_from_ui())
         self.ae_check.toggled.connect(lambda: self._update_settings_from_ui())
+        self.multisample_combo.currentTextChanged.connect(lambda: self._update_settings_from_ui())
+        self.single_line_check.toggled.connect(lambda: self._update_settings_from_ui())
+        self.lock_white_balance_check.toggled.connect(lambda: self._update_settings_from_ui())
+        self.lock_exposure_check.toggled.connect(lambda: self._update_settings_from_ui())
         self.frame_from_spin.valueChanged.connect(self._on_frame_from_changed)
         self.frame_to_spin.valueChanged.connect(self._on_frame_to_changed)
         self.scan_window_btn.clicked.connect(self._on_set_scan_window)
@@ -343,6 +380,10 @@ class ScanSidebar(QWidget):
             self.dpi_combo.setEnabled(False)
             self.depth_combo.setEnabled(False)
             self.ir_check.setEnabled(False)
+            self.quality_row_label.setVisible(False)
+            self.quality_row_widget.setVisible(False)
+            self.lock_white_balance_check.setVisible(False)
+            self.lock_exposure_check.setVisible(False)
             self.eject_btn.setVisible(False)
             self.frame_range_label.setVisible(False)
             self.frame_range_widget.setVisible(False)
@@ -352,6 +393,8 @@ class ScanSidebar(QWidget):
         self.dpi_combo.setEnabled(True)
         self.depth_combo.setEnabled(True)
         self.ir_check.setEnabled(True)
+        self.multisample_combo.setEnabled(True)
+        self.single_line_check.setEnabled(True)
         self.eject_btn.setVisible(caps.can_eject)
         self.eject_btn.setEnabled(caps.can_eject and not self._scanning)
         self.frame_label.setText(f"Frame: {caps.max_area_mm[0]:.0f} × {caps.max_area_mm[1]:.0f} mm")
@@ -371,6 +414,10 @@ class ScanSidebar(QWidget):
         self.depth_combo.blockSignals(True)
         self.ir_check.blockSignals(True)
         self.ae_check.blockSignals(True)
+        self.multisample_combo.blockSignals(True)
+        self.single_line_check.blockSignals(True)
+        self.lock_white_balance_check.blockSignals(True)
+        self.lock_exposure_check.blockSignals(True)
         self.frame_from_spin.blockSignals(True)
         self.frame_to_spin.blockSignals(True)
 
@@ -417,6 +464,25 @@ class ScanSidebar(QWidget):
             self.ae_check.setChecked(False)
             self.ae_check.setToolTip("Auto-exposure not supported by this device")
 
+        # Multisample / single-line (nkscan-specific quality knobs; hidden entirely
+        # on devices that report neither).
+        has_multisample = len(caps.multisample) > 1
+        self.quality_row_label.setVisible(has_multisample or caps.single_line)
+        self.quality_row_widget.setVisible(has_multisample or caps.single_line)
+
+        self.multisample_combo.clear()
+        self.multisample_combo.setVisible(has_multisample)
+        self.multisample_combo.setEnabled(has_multisample)
+        if has_multisample:
+            for m in caps.multisample:
+                self.multisample_combo.addItem(f"{m}×", m)
+            idx = self.multisample_combo.findData(self._settings.multisample)
+            self.multisample_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        self.single_line_check.setVisible(caps.single_line)
+        self.single_line_check.setEnabled(caps.single_line)
+        self.single_line_check.setChecked(caps.single_line and self._settings.single_line)
+
         # Frame range — only a roll/strip feeder reporting a live capacity
         capacity = caps.adapter_frame_capacity
         has_frames = capacity is not None
@@ -433,6 +499,17 @@ class ScanSidebar(QWidget):
             self.frame_from_spin.setValue(frm)
             self.frame_to_spin.setValue(to)
 
+        # Lock white balance / lock exposure across batch (nkscan-specific,
+        # independent controls; only meaningful once there's a batch to hold
+        # exposure across).
+        show_lock = caps.supports_exposure_lock and has_frames
+        self.lock_white_balance_check.setVisible(show_lock)
+        self.lock_white_balance_check.setEnabled(show_lock)
+        self.lock_white_balance_check.setChecked(show_lock and self._settings.lock_white_balance)
+        self.lock_exposure_check.setVisible(show_lock)
+        self.lock_exposure_check.setEnabled(show_lock)
+        self.lock_exposure_check.setChecked(show_lock and self._settings.lock_exposure)
+
         self.scan_window_row_label.setVisible(has_frames)
         self.scan_window_widget.setVisible(has_frames)
         self.scan_window_status.setVisible(has_frames)
@@ -445,6 +522,10 @@ class ScanSidebar(QWidget):
         self.depth_combo.blockSignals(False)
         self.ir_check.blockSignals(False)
         self.ae_check.blockSignals(False)
+        self.multisample_combo.blockSignals(False)
+        self.single_line_check.blockSignals(False)
+        self.lock_white_balance_check.blockSignals(False)
+        self.lock_exposure_check.blockSignals(False)
         self.frame_from_spin.blockSignals(False)
         self.frame_to_spin.blockSignals(False)
 
@@ -548,6 +629,10 @@ class ScanSidebar(QWidget):
         capture_ir = self.ir_check.isEnabled() and self.ir_check.isChecked()
         autofocus = self.autofocus_check.isChecked()
         auto_exposure = self.ae_check.isEnabled() and self.ae_check.isChecked()
+        multisample = int(self.multisample_combo.currentData() or 1) if self.multisample_combo.isEnabled() else 1
+        single_line = self.single_line_check.isEnabled() and self.single_line_check.isChecked()
+        lock_white_balance = self.lock_white_balance_check.isEnabled() and self.lock_white_balance_check.isChecked()
+        lock_exposure = self.lock_exposure_check.isEnabled() and self.lock_exposure_check.isChecked()
         pattern = self.pattern_edit.text().strip() or '{{ date }}_{{ "%03d" % seq }}'
         fmt = self.fmt_combo.currentText()
 
@@ -562,6 +647,8 @@ class ScanSidebar(QWidget):
             auto_exposure=auto_exposure,
             window=base_window,
             frame_offset_mm=self._settings.frame_offset_mm,
+            multisample=multisample,
+            single_line=single_line,
         )
 
         self._update_settings_from_ui()
@@ -580,6 +667,8 @@ class ScanSidebar(QWidget):
                         frames=frames,
                         frame_windows=frame_windows,
                         frame_offset_modifier_mm=self._settings.frame_offset_modifier_mm,
+                        lock_white_balance=lock_white_balance,
+                        lock_exposure=lock_exposure,
                     )
                 )
             else:
@@ -685,27 +774,13 @@ class ScanSidebar(QWidget):
             capture_ir=self.ir_check.isChecked() and self.ir_check.isEnabled(),
             autofocus=self.autofocus_check.isChecked(),
             auto_exposure=self.ae_check.isChecked() and self.ae_check.isEnabled(),
+            multisample=int(self.multisample_combo.currentData() or 1) if self.multisample_combo.isEnabled() else 1,
+            single_line=self.single_line_check.isChecked() and self.single_line_check.isEnabled(),
+            lock_white_balance=self.lock_white_balance_check.isChecked() and self.lock_white_balance_check.isEnabled(),
+            lock_exposure=self.lock_exposure_check.isChecked() and self.lock_exposure_check.isEnabled(),
             frame_from=self.frame_from_spin.value(),
             frame_to=self.frame_to_spin.value(),
             output_folder=self.folder_edit.text().strip(),
             output_format=self.fmt_combo.currentText(),
             filename_pattern=self.pattern_edit.text().strip() or '{{ date }}_{{ "%03d" % seq }}',
         )
-
-
-class _ScanUnsupportedPlaceholder(QWidget):
-    """Shown on Windows where SANE is not available."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        # No layout alignment and no QSS padding: either one breaks the wrapped
-        # QLabel's height-for-width negotiation and clips the text — the label
-        # must be stretched to full width so it can report its wrapped height.
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-
-        label = QLabel("Scanner support not yet available on Windows.")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setWordWrap(True)
-        label.setStyleSheet(f"color: {THEME.text_muted}; font-size: {THEME.font_size_base}px;")
-        layout.addWidget(label)

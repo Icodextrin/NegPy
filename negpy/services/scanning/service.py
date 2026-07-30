@@ -46,13 +46,15 @@ class ScannerService:
     def refresh_devices(self) -> list[ScannerDevice]:
         return self._get_backend().refresh_devices()
 
-    def open_session(self, device_id: str) -> ScannerSession:
+    def open_session(self, device_id: str, *, lock_white_balance: bool = False) -> ScannerSession:
         """Open an exclusive device session for batch/roll workflows.
 
         The session owns the scanner until closed: one continuous open, per-frame
-        scan() calls, one release (close/eject) at the end.
+        scan() calls, one release (close/eject) at the end. `lock_white_balance` is
+        the caller's intent to hold white balance during this session's own
+        metering — see ScannerBackend.open_session.
         """
-        return self._get_backend().open_session(device_id)
+        return self._get_backend().open_session(device_id, lock_white_balance=lock_white_balance)
 
     def eject(self, device_id: str) -> bool:
         """Trigger the device's eject action.
@@ -80,11 +82,46 @@ class ScannerService:
         *,
         retry_delay: float = _SCAN_IO_RETRY_DELAY_S,
     ) -> ScanResult:
-        """Scan, retrying once on a transient USB I/O glitch (fresh open each try)."""
+        """One-shot scan (backend opens, scans, closes), retrying once on a
+        transient USB I/O glitch (fresh open each try)."""
         backend = self._get_backend()
+        return self._retry_transient(
+            lambda: backend.scan(device_id, params, progress, cancel),
+            device_id=device_id,
+            cancel=cancel,
+            retry_delay=retry_delay,
+        )
+
+    def run_session_scan(
+        self,
+        session: ScannerSession,
+        params: ScanParams,
+        progress: Callable[[float], None],
+        cancel: threading.Event,
+        *,
+        retry_delay: float = _SCAN_IO_RETRY_DELAY_S,
+    ) -> ScanResult:
+        """Scan one frame on an already-open session (batch/roll workflows that hold
+        the device across many frames), with the same transient-retry behaviour as
+        run_scan."""
+        return self._retry_transient(
+            lambda: session.scan(params, progress, cancel),
+            device_id=session.device_id,
+            cancel=cancel,
+            retry_delay=retry_delay,
+        )
+
+    @staticmethod
+    def _retry_transient(
+        scan_fn: Callable[[], ScanResult],
+        *,
+        device_id: str,
+        cancel: threading.Event,
+        retry_delay: float,
+    ) -> ScanResult:
         for attempt in range(1, _SCAN_IO_RETRY_ATTEMPTS + 1):
             try:
-                return backend.scan(device_id, params, progress, cancel)
+                return scan_fn()
             except TransientScanError as e:
                 if attempt >= _SCAN_IO_RETRY_ATTEMPTS or cancel.is_set():
                     raise

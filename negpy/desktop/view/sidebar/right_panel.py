@@ -1,4 +1,3 @@
-import sys
 from typing import Any, Dict
 
 import qtawesome as qta
@@ -94,12 +93,12 @@ class RightPanel(QWidget):
         self.metadata_sidebar = MetadataSidebar(self.controller)
         self.history_panel = HistoryPanel(self.controller)
 
-        from negpy.desktop.view.sidebar.scan import ScanSidebar, _ScanUnsupportedPlaceholder
+        from negpy.desktop.view.sidebar.scan import ScanSidebar
 
-        if sys.platform == "win32":
-            self.scan_sidebar = _ScanUnsupportedPlaceholder()
-        else:
-            self.scan_sidebar = ScanSidebar(self.controller)
+        # nkscan supports Windows for some devices, so always build the real sidebar;
+        # a backend that isn't available on this platform surfaces through
+        # ScannerUnavailable's install hint instead.
+        self.scan_sidebar = ScanSidebar(self.controller)
 
         from negpy.desktop.view.sidebar.scanlight import ScanlightSidebar
 

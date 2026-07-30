@@ -288,7 +288,7 @@ class TestServiceOpenSession:
             def __init__(self) -> None:
                 self.calls: list[str] = []
 
-            def open_session(self, device_id: str):
+            def open_session(self, device_id: str, *, lock_white_balance: bool = False):
                 self.calls.append(device_id)
                 return sentinel
 

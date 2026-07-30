@@ -25,6 +25,10 @@ class ScanParams:
     # Hardware auto-exposure (SANE `ae`), distinct from NegPy's rendering
     # auto-exposure. An explicit request fails if the option is unavailable.
     auto_exposure: bool = False
+    # Multisample averaging factor and single-line CCD mode. nkscan-specific;
+    # ignored by backends that don't support them.
+    multisample: int = 1
+    single_line: bool = False
 
 
 MIN_FRAME_EXTENT_MM = 1.0  # below this a capped scan is a useless sliver

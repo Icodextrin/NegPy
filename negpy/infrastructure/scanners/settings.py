@@ -14,6 +14,10 @@ class ScannerSettings:
     capture_ir: bool = False
     autofocus: bool = True
     auto_exposure: bool = False
+    multisample: int = 1
+    single_line: bool = False
+    lock_white_balance: bool = False
+    lock_exposure: bool = False
     frame_from: int = 1
     frame_to: int = 1
     output_folder: str = ""

@@ -322,6 +322,9 @@ dev = [
     { name = "ruff" },
     { name = "ty" },
 ]
+nkscan = [
+    { name = "nkscan" },
+]
 scanner = [
     { name = "python-sane" },
 ]
@@ -354,7 +357,21 @@ dev = [
     { name = "ruff", specifier = "==0.14.10" },
     { name = "ty", specifier = ">=0.0.26" },
 ]
+nkscan = [{ name = "nkscan", specifier = ">=0.1.0" }]
 scanner = [{ name = "python-sane", specifier = ">=2.9" }]
+
+[[package]]
+name = "nkscan"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/75/be7781b46868cda43314ff98522a200a9d19b5ab20bb09e2155639042a2c/nkscan-0.1.0.tar.gz", hash = "sha256:66d84dc1910b2d87ac270dcaf33ca249a44287cb691a77c5a789cbd8ee5cbee3", size = 201179, upload-time = "2026-07-30T17:04:53.778Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/fa/d7e5bec233f36746e687f1ce7444c159167aae4b7aea2435fc884cdf8906/nkscan-0.1.0-cp313-abi3-macosx_10_12_x86_64.whl", hash = "sha256:f39fd98a02b6fb5d293c06febb56e8aa7ac94b0afb0e1b37e5846d5c31d99198", size = 549065, upload-time = "2026-07-30T17:04:46.278Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/5e/8addcd41d8c60a10dfd43d5e0fab7b7266ce4564c56272997074f139ae94/nkscan-0.1.0-cp313-abi3-macosx_11_0_arm64.whl", hash = "sha256:285350c5efee51e7fc56c6933ece863d83d1f1aa6f653052ddaae13e18f085d8", size = 532609, upload-time = "2026-07-30T17:04:47.843Z" },
+    { url = "https://files.pythonhosted.org/packages/48/c6/33df56f628486f5c338375f806eb6efe2380a7e024e2aa7ad1ef8e27d006/nkscan-0.1.0-cp313-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4a7253339c4e9f9b5f6040b8b66bb50ae9d2a1786d7679a2ce71fc3dfeebfb44", size = 615385, upload-time = "2026-07-30T17:04:49.425Z" },
+    { url = "https://files.pythonhosted.org/packages/df/ee/a7aa7bc9208d18e3637590927974e5a74a0f9d2df35b24ebb4b97d4e2aa5/nkscan-0.1.0-cp313-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2fec70749cc876b665b3fac0d727fbbc36a7680c8bae6462919900ba1bbdbc92", size = 663715, upload-time = "2026-07-30T17:04:50.825Z" },
+    { url = "https://files.pythonhosted.org/packages/b6/a7/2f5a8dfef2b78e668b22de42ed115eb627f71d54cc1106b4b34d49a3b5b4/nkscan-0.1.0-cp313-abi3-win_amd64.whl", hash = "sha256:ec63b85d2b6aafe43e59a7e1ab460cd8b145f486335cd5d475b58f536d9e3389", size = 401021, upload-time = "2026-07-30T17:04:52.37Z" },
+]
 
 [[package]]
 name = "numba"

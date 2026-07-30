@@ -614,6 +614,9 @@ class SaneSession:
             raise RuntimeError(f"Scanner session for {self.device_id} is closed")
         return self._backend._scan_on_device(self._dev, self.device_id, params, progress, cancel)
 
+    def lock_exposure(self) -> None:
+        """No-op: SANE's `ae` re-meters fresh on every scan, there's nothing to freeze."""
+
     def eject(self) -> bool:
         """Press the vendor eject action, if any. Always ends the session.
 
@@ -749,11 +752,15 @@ class SaneBackend:
             logger.info(f"Scanner {device_id} re-enumerated; remapped to {fresh_id}")
             return dev, fresh_id
 
-    def open_session(self, device_id: str) -> SaneSession:
+    def open_session(self, device_id: str, *, lock_white_balance: bool = False) -> SaneSession:
         """Open an exclusive scanning session — the batch/roll handover seam.
 
         The device is opened once (self-healing via _open_device) and stays
         open until SaneSession.close()/eject(). One session per device.
+
+        `lock_white_balance` is accepted for ScannerBackend conformance and ignored:
+        `ae` re-meters fresh on every scan, so there's no cast-preserving metering
+        mode to hold (see SaneSession.lock_exposure()).
         """
         try:
             self._ensure_initialized()

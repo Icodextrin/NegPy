@@ -5,6 +5,10 @@ def test_backend_choices_includes_sane():
     assert ("sane", "SANE") in registry.backend_choices()
 
 
+def test_backend_choices_includes_nkscan():
+    assert ("nkscan", "nkscan (Coolscan)") in registry.backend_choices()
+
+
 def test_create_backend_resolves_and_falls_back(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(registry, "BACKENDS", {"sane": ("SANE", lambda: sentinel)})

@@ -466,10 +466,19 @@ When you set capture gear, it's written to standard EXIF and the digitizing rig 
 
 ## 12. Scan tab
 
-Capture film directly into NegPy (Linux and macOS; unavailable on Windows). Two collapsible sections:
+Capture film directly into NegPy. Two collapsible sections:
 
-*   **Scanner (SANE)**: drive a supported flatbed/film scanner over SANE.
+*   **Scanner**: drive a scanner over one of two backends, picked from the **Backend** dropdown:
+    *   **SANE**: any supported flatbed/film scanner via SANE. Linux and macOS only.
+    *   **nkscan**: a Nikon Coolscan directly over USB or SCSI (FireWire). Linux, macOS and Windows (macOS is USB-only for now). Needs the optional `nkscan` dependency (`uv sync --group nkscan`).
 *   **Camera Scanning**: DSLR/mirrorless copy-stand capture. Auto-connects the camera over USB (PC-Remote mode). With a NegPy **Scanlight** connected it captures narrowband R/G/B triplets from saved film-stock presets; without one it does a single white-light exposure. A **Live View** window helps you frame and focus; captured frames land in the hot folder and flow straight into RGB-Scan mode.
+
+The Scanner panel's controls are mostly backend-agnostic (DPI, bit depth, IR, autofocus, auto-exposure, frame range), but a few only appear for devices that support them:
+
+*   **Quality** (multisample / single-line): nkscan-specific. Multisample averages multiple passes to trade scan time for lower noise; single-line reads the sensor one line at a time, which is slower but can reduce banding. Hidden on devices that report neither.
+*   **Lock white balance** / **Lock exposure across batch**: nkscan-specific, shown once a frame range exists, and independent of each other. **Lock white balance** holds white balance during every frame's own metering, so the film's cast isn't scanned out. **Lock exposure across batch** meters only the first frame, then holds that exact exposure for every remaining frame. Combine both for roll analysis (consistent color and brightness across the whole strip); either can be used alone. Both off by default.
+
+A batch scan holds the scanner open for the whole frame range rather than reopening per frame, regardless of backend.
 
 Camera scanning needs the optional `python-gphoto2` dependency (`pip install gphoto2`; no Windows build). See [CAMERA_SCANNING.md](CAMERA_SCANNING.md).
 

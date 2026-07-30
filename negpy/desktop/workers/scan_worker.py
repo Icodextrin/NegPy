@@ -35,7 +35,7 @@ class RollPreviewRequest:
 
 @dataclass(frozen=True)
 class BatchRequest:
-    """Scan an explicit set of frames, one SANE session each, frame-numbered output."""
+    """Scan an explicit set of frames under one held session, frame-numbered output."""
 
     device_id: str
     params: ScanParams  # base; frame + window + offset overridden per iteration
@@ -47,6 +47,12 @@ class BatchRequest:
     # Feed-axis drift (mm/frame): frame N scans at
     # frame_offset_mm + (N-1) * modifier, floored at 0.
     frame_offset_modifier_mm: float = 0.0
+    # Independent controls, both no-ops on a backend with nothing to hold/freeze:
+    # hold white balance during every frame's own metering (session open-time intent).
+    lock_white_balance: bool = False
+    # Meter the first frame, then freeze that exact gain for the rest of the batch
+    # (session.lock_exposure(), called after frame 1 completes).
+    lock_exposure: bool = False
 
 
 class ScanWorker(QObject):
@@ -175,7 +181,11 @@ class ScanWorker(QObject):
 
     @pyqtSlot(BatchRequest)
     def run_batch(self, req: BatchRequest) -> None:
-        """Scan a frame range, one SANE session per frame, frame-numbered output.
+        """Scan a frame range under one held session, frame-numbered output.
+
+        The device stays open for the whole range (see ScannerSession) rather than
+        reopening per frame — required for nkscan's held-exposure workflow, and
+        avoids the Coolscan feeder auto-parking between frames.
 
         Holds an idle-sleep assertion for the whole run — a 40-frame SA-30 batch
         at 4000 dpi is a long unattended operation. `batch_finished` always fires
@@ -195,44 +205,53 @@ class ScanWorker(QObject):
         outcome: tuple[str, str | None] = ("finished", None)
         try:
             service = self._ensure_service()
-            for index, frame in enumerate(frames):
-                if self._cancel_event.is_set():
-                    outcome = ("cancelled", None)
-                    break
-                window = req.frame_windows.get(frame, req.params.window)
-                offset = max(0.0, req.params.frame_offset_mm + (frame - 1) * req.frame_offset_modifier_mm)
-                frame_params = dataclasses.replace(req.params, frame=frame, window=window, frame_offset_mm=offset)
-                base = index / total
-
-                def _progress(fraction: float, _base: float = base) -> None:
-                    self.progress.emit(_base + min(1.0, max(0.0, fraction)) / total)
-
-                try:
-                    result = service.run_scan(req.device_id, frame_params, _progress, self._cancel_event)
-                except Exception as error:
+            session = service.open_session(req.device_id, lock_white_balance=req.lock_white_balance)
+            try:
+                for index, frame in enumerate(frames):
                     if self._cancel_event.is_set():
                         outcome = ("cancelled", None)
-                    else:
-                        logger.exception("Batch frame %s scan failed", frame)
+                        break
+                    window = req.frame_windows.get(frame, req.params.window)
+                    offset = max(0.0, req.params.frame_offset_mm + (frame - 1) * req.frame_offset_modifier_mm)
+                    frame_params = dataclasses.replace(req.params, frame=frame, window=window, frame_offset_mm=offset)
+                    base = index / total
+
+                    def _progress(fraction: float, _base: float = base) -> None:
+                        self.progress.emit(_base + min(1.0, max(0.0, fraction)) / total)
+
+                    try:
+                        result = service.run_session_scan(session, frame_params, _progress, self._cancel_event)
+                    except Exception as error:
+                        if self._cancel_event.is_set():
+                            outcome = ("cancelled", None)
+                        else:
+                            logger.exception("Batch frame %s scan failed", frame)
+                            outcome = ("error", str(error))
+                        break
+                    if self._cancel_event.is_set():
+                        outcome = ("cancelled", None)
+                        break
+                    if index == 0 and req.lock_exposure:
+                        try:
+                            session.lock_exposure()
+                        except Exception:
+                            logger.exception("Could not lock exposure after frame %s", frame)
+                    try:
+                        path = service.write_result(
+                            result=result,
+                            output_folder=req.output_folder,
+                            filename_pattern=req.filename_pattern,
+                            output_format=req.output_format,
+                            seq=frame,
+                        )
+                    except Exception as error:
+                        logger.exception("Could not write batch frame %s", frame)
                         outcome = ("error", str(error))
-                    break
-                if self._cancel_event.is_set():
-                    outcome = ("cancelled", None)
-                    break
-                try:
-                    path = service.write_result(
-                        result=result,
-                        output_folder=req.output_folder,
-                        filename_pattern=req.filename_pattern,
-                        output_format=req.output_format,
-                        seq=frame,
-                    )
-                except Exception as error:
-                    logger.exception("Could not write batch frame %s", frame)
-                    outcome = ("error", str(error))
-                    break
-                paths.append(path)
-                self.frame_done.emit(frame, path)
+                        break
+                    paths.append(path)
+                    self.frame_done.emit(frame, path)
+            finally:
+                session.close()
         except Exception as error:
             logger.exception("Could not run scan batch")
             outcome = ("error", str(error))

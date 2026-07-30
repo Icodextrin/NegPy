@@ -3,10 +3,7 @@ name = "negpy"
 description = "A tool for processing film negatives."
 readme = "README.md"
 license = "GPL-3.0"
-authors = [
-    { name = "marcinz606" },
-    { name = "NegPy Contributors" }
-]
+authors = [{ name = "marcinz606" }, { name = "NegPy Contributors" }]
 dynamic = ["version"]
 requires-python = ">=3.13"
 dependencies = [
@@ -36,7 +33,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Graphics :: Graphics Conversion",
     "Topic :: Multimedia :: Graphics :: Viewers",
-    "Topic :: Scientific/Engineering :: Image Processing"
+    "Topic :: Scientific/Engineering :: Image Processing",
 ]
 
 [dependency-groups]
@@ -47,13 +44,15 @@ dev = [
     "ruff==0.14.10",
     "ty>=0.0.26",
 ]
-scanner = [
-    "python-sane>=2.9",
-]
+scanner = ["python-sane>=2.9"]
 camera = [
     # Tethered camera scanning. libgphoto2 has no Windows build, so the wheels — and the
     # Camera Scanning tab with them — are macOS and Linux only.
     "gphoto2>=2.5 ; sys_platform != 'win32'",
+]
+nkscan = [
+    # Rust-based USB/SCSI Nikon Coolscan driver.
+    "nkscan>=0.1.0",
 ]
 
 [project.urls]
