@@ -81,6 +81,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "separation_damping_dec": ShortcutEntry("", "Separation Damping down", "Exposure"),
     "separation_damping_inc": ShortcutEntry("", "Separation Damping up", "Exposure"),
     "lock_bounds_toggle": ShortcutEntry("Alt+Q", "Toggle bounds lock", "Process"),
+    "scan_setup": ShortcutEntry("", "Scanning setup wizard", "Process"),
     "analysis_buffer_dec": ShortcutEntry("Alt+Shift+B", "Analysis buffer down", "Process"),
     "analysis_buffer_inc": ShortcutEntry("Alt+B", "Analysis buffer up", "Process"),
     "luma_range_clip_dec": ShortcutEntry("Alt+Shift+N", "Luma range clip down", "Process"),

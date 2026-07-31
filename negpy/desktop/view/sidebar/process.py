@@ -71,23 +71,6 @@ class ProcessSidebar(BaseSidebar):
     def _init_ui(self) -> None:
         conf = self.state.config.process
 
-        mode_row = QHBoxLayout()
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItems([m.value for m in ProcessMode])
-        self.mode_combo.setCurrentText(conf.process_mode)
-        self.mode_combo.setToolTip("Film process mode: C41 (colour negative), B&W (panchromatic), E-6 (slide/reversal)")
-        self.lock_bounds_btn = self._small_toggle(
-            "fa5s.lock",
-            "Lock Bounds",
-            False,
-            "Freeze normalization bounds — crop and analysis sliders no longer re-analyze",
-        )
-        self.autodetect_btn = self._small_toggle("mdi6.auto-fix", "", False, "Auto-detect film process (C41/B&W/E-6) on load")
-        self.autodetect_btn.setFixedWidth(28)
-        mode_row.addWidget(self.mode_combo, stretch=1)
-        mode_row.addWidget(self.autodetect_btn)
-        self.layout.addLayout(mode_row)
-
         self.linear_raw_btn = self._small_toggle(
             "fa5s.sliders-h",
             "Linear RAW",
@@ -101,11 +84,36 @@ class ProcessSidebar(BaseSidebar):
             "Correct trichrome narrowband RGB scans oversaturation with the bundled input profile "
             "An explicit Input ICC in Export settings overrides it",
         )
+        self.lock_bounds_btn = self._small_toggle(
+            "fa5s.lock",
+            "",
+            False,
+            "Lock Bounds — freeze normalization bounds so crop and analysis sliders no longer re-analyze",
+        )
+        self.lock_bounds_btn.setFixedWidth(28)
+        self.scan_setup_btn = self._icon_action(
+            "mdi6.lightbulb-on-outline",
+            "Scanning setup — set Linear RAW and Narrowband from your camera/scanner and its light source",
+            width=28,
+        )
         raw_row = QHBoxLayout()
         raw_row.addWidget(self.linear_raw_btn, 1)
         raw_row.addWidget(self.narrowband_scan_btn, 1)
-        raw_row.addWidget(self.lock_bounds_btn, 1)
+        raw_row.addWidget(self.lock_bounds_btn)
+        raw_row.addWidget(self.scan_setup_btn)
         self.layout.addLayout(raw_row)
+
+        mode_row = QHBoxLayout()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems([m.value for m in ProcessMode])
+        self.mode_combo.setCurrentText(conf.process_mode)
+        self.mode_combo.setToolTip("Film process mode: C41 (colour negative), B&W (panchromatic), E-6 (slide/reversal)")
+        self.autodetect_btn = self._small_toggle("mdi6.auto-fix", "", False, "Auto-detect film process (C41/B&W/E-6) on load")
+        self.autodetect_btn.setFixedWidth(28)
+        mode_row.addWidget(field_label("Mode"))
+        mode_row.addWidget(self.mode_combo, stretch=1)
+        mode_row.addWidget(self.autodetect_btn)
+        self.layout.addLayout(mode_row)
 
         buf_row = QHBoxLayout()
         self.analysis_buffer_slider = CompactSlider("Analysis Buffer", 0.0, 0.25, conf.analysis_buffer)
@@ -227,6 +235,7 @@ class ProcessSidebar(BaseSidebar):
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         self.ch_btn_group.idToggled.connect(lambda _id, checked: self.sync_ui() if checked else None)
         self.autodetect_btn.toggled.connect(lambda c: self.controller.toggle_autodetect(c))
+        self.scan_setup_btn.clicked.connect(self._open_scan_setup)
         self.lock_bounds_btn.toggled.connect(self._on_lock_bounds_toggled)
         self.linear_raw_btn.toggled.connect(self._on_linear_raw_toggled)
         self.narrowband_scan_btn.toggled.connect(self._on_narrowband_scan_toggled)
@@ -293,6 +302,13 @@ class ProcessSidebar(BaseSidebar):
             **invalidate_local_bounds(self.state.config.process),
         )
         self.sync_ui()
+
+    def _open_scan_setup(self) -> None:
+        from negpy.desktop.view.main_window import MainWindow
+
+        win = self.window()
+        if isinstance(win, MainWindow):
+            win.show_scan_setup()
 
     def _on_crosstalk_profile_changed(self, name: str) -> None:
         # Bake the matrix into the config so saved edits stay reproducible if the

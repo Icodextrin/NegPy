@@ -6,6 +6,7 @@ from PIL import Image
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QMainWindow,
     QMessageBox,
     QStatusBar,
@@ -145,7 +146,9 @@ class MainWindow(QMainWindow):
 
         repo = self.controller.session.repo
         if not repo.get_global_setting("tutorial_seen", False):
-            QTimer.singleShot(600, self.show_tutorial)
+            QTimer.singleShot(600, self.show_tutorial)  # the scan-setup wizard follows the tour
+        elif repo.get_global_setting("scan_setup") is None:
+            QTimer.singleShot(600, self.show_scan_setup)
 
     def _restore_window_geometry(self) -> None:
         """Open clamped to the screen work area, restoring the saved size/position if any."""
@@ -302,7 +305,21 @@ class MainWindow(QMainWindow):
         self.tutorial_overlay.start(build(self))
 
     def _on_tutorial_finished(self, _completed: bool) -> None:
-        self.controller.session.repo.save_global_setting("tutorial_seen", True)
+        repo = self.controller.session.repo
+        repo.save_global_setting("tutorial_seen", True)
+        # Unset only until the wizard is answered once, so replaying the tour later
+        # from the ⋯ menu doesn't ask again.
+        if repo.get_global_setting("scan_setup") is None:
+            QTimer.singleShot(0, self.show_scan_setup)
+
+    def show_scan_setup(self) -> None:
+        from negpy.desktop.view.widgets.scan_setup_dialog import ScanSetupDialog
+
+        repo = self.controller.session.repo
+        dlg = ScanSetupDialog(self, repo.get_global_setting("scan_setup"))
+        # Cancel leaves scan_setup unset: an unanswered wizard is not an answer, so it asks again.
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self.controller.apply_scan_setup(**dlg.choice())
 
     def _restore_default_dock_state(self) -> None:
         """Restore both docks to the snapshot taken at startup (home edge + width)."""

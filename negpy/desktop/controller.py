@@ -73,7 +73,7 @@ from negpy.features.geometry.logic import apply_fine_rotation, detect_closest_as
 from negpy.features.geometry.models import FINE_ROTATION_LIMIT, AutocropMode
 from negpy.features.lab.models import LabConfig
 from negpy.features.local.models import LocalAdjustmentsConfig
-from negpy.features.process.models import ProcessConfig, ProcessMode, invalidate_local_bounds
+from negpy.features.process.models import ProcessConfig, ProcessMode, invalidate_local_bounds, scan_setup_values
 from negpy.features.rgbscan.models import is_rgb_triplet
 from negpy.services.assets.thumbnails import thumbnail_cache_key
 from negpy.kernel.system.paths import get_resource_path
@@ -806,6 +806,63 @@ class AppController(QObject):
                 if f.get(k):
                     paths.append(f[k])
         self.request_asset_discovery(paths, replace_existing=True, reselect_path=self.state.current_file_path)
+
+    def apply_scan_setup(self, capture: str, light: str) -> None:
+        """Apply the scanning-setup wizard's answer: Linear RAW and Narrowband are rig
+        properties, so they land on the new-file defaults, the open frame and every
+        already-edited frame at once."""
+        linear_raw, narrowband = scan_setup_values(capture, light)
+        self.session.repo.save_global_settings(
+            {
+                "scan_setup": {"capture": capture, "light": light},
+                "last_linear_raw": linear_raw,
+                "last_narrowband_scan": narrowband,
+            }
+        )
+
+        reload_needed = False
+        if self.state.current_file_hash:
+            reload_needed = self.state.config.process.linear_raw != linear_raw
+            new_config = replace(
+                self.state.config,
+                process=replace(
+                    self.state.config.process,
+                    linear_raw=linear_raw,
+                    narrowband_scan=narrowband,
+                    **invalidate_local_bounds(self.state.config.process),
+                ),
+            )
+            # render=False when reloading: bounds must not be analysed on the stale decode.
+            self.session.update_config(new_config, persist=True, render=not reload_needed)
+
+        count = 0
+        for asset in self.session.state.uploaded_files:
+            file_hash = asset["hash"]
+            if file_hash == self.state.current_file_hash:
+                continue
+            # Frames with no saved edits inherit the values from the sticky defaults when
+            # they are first hydrated — writing them here would only churn the DB.
+            saved = self.session.repo.load_file_settings(file_hash)
+            if saved is None:
+                continue
+            updated = replace(
+                saved,
+                process=replace(
+                    saved.process,
+                    linear_raw=linear_raw,
+                    narrowband_scan=narrowband,
+                    **invalidate_local_bounds(saved.process),
+                ),
+            )
+            self.session.push_external_history(file_hash, saved, updated)
+            self.session.repo.save_file_settings(file_hash, updated, file_path=asset["path"])
+            count += 1
+
+        if reload_needed and self.state.current_file_path:
+            self.load_file(self.state.current_file_path)
+        if count:
+            self.session.settings_synced.emit(f"Scanning setup applied to {count} other frame{'s' if count != 1 else ''}")
+            self.session.settings_saved.emit()
 
     def set_half_frame_mode(self, enabled: bool) -> None:
         """Persist the half-frame toggle and re-discover already-loaded assets so the
