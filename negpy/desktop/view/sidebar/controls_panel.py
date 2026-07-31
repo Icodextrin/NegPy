@@ -481,7 +481,7 @@ class ControlsPanel(QWidget):
 
         proc.lock_bounds_btn.setToolTip(
             tooltip_with_shortcut(
-                "Freeze normalization bounds — crop and analysis sliders no longer re-analyze the frame",
+                "Lock Bounds — freeze normalization bounds so crop and analysis sliders no longer re-analyze the frame",
                 "lock_bounds_toggle",
             )
         )

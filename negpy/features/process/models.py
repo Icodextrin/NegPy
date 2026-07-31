@@ -112,6 +112,13 @@ def invalidate_local_bounds(process: ProcessConfig) -> dict:
     return {"local_floors": (0.0, 0.0, 0.0), "local_ceils": (0.0, 0.0, 0.0)}
 
 
+def scan_setup_values(capture: str, light: str) -> tuple[bool, bool]:
+    """(linear_raw, narrowband_scan) for a scanning rig — capture is "camera"/"scanner",
+    light is "white"/"narrowband". A camera under white light is the only combination that
+    wants the as-shot-WB decode."""
+    return not (capture == "camera" and light == "white"), light == "narrowband"
+
+
 def per_channel_point_offsets(process: ProcessConfig, e6: bool) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
     Signed per-channel white/black point offsets: global + per-layer trim.
