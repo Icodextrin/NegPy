@@ -462,7 +462,9 @@ class ScanSidebar(QWidget):
             self.ae_check.setToolTip("Meter exposure in hardware before the scan")
         else:
             self.ae_check.setChecked(False)
-            self.ae_check.setToolTip("Auto-exposure not supported by this device")
+            # Covers both shapes of "off": a device with no metering to ask for, and one that
+            # meters in firmware on every pass (an LS-50 over nkscan) and takes no say in it.
+            self.ae_check.setToolTip("Exposure metering is not adjustable on this device")
 
         # Multisample / single-line (nkscan-specific quality knobs; hidden entirely
         # on devices that report neither).
