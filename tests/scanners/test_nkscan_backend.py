@@ -100,8 +100,10 @@ class FakeSession:
         rgb_shape: tuple[int, int, int] = (6, 5, 3),
         capabilities: FakeCapabilities | None = None,
         progress_steps: int = 2,
+        sensed_frames: int | None = 6,
     ) -> None:
         self.device_id = device_id
+        self._sensed_frames = sensed_frames
         self.model = "LS-50"
         self.capabilities = capabilities or FakeCapabilities()
         self.prepare_calls: list[dict[str, Any]] = []
@@ -117,6 +119,9 @@ class FakeSession:
     def prepare(self, **kwargs: Any) -> int:
         self.prepare_calls.append(kwargs)
         return 1
+
+    def sensed_frames(self) -> int | None:
+        return self._sensed_frames
 
     def scan(
         self,
@@ -209,6 +214,73 @@ def test_list_devices_maps_capabilities(fake_nkscan: FakeNkscanModule) -> None:
     assert caps.ir_channel is True
     assert caps.can_eject is True
     assert caps.supports_exposure_lock is True  # every nkscan session can lock_gain()
+    assert caps.adapter_frame_control is True
+    assert caps.adapter_frame_capacity == 6  # what the loaded carrier reported
+
+
+def test_a_device_without_frame_control_offers_no_frame_range(fake_nkscan: FakeNkscanModule) -> None:
+    fake_nkscan._session = FakeSession(_DEV_ID, capabilities=FakeCapabilities(frame_control=False))
+
+    caps = NkscanBackend().list_devices()[0].capabilities
+
+    assert caps.adapter_frame_capacity is None
+    assert caps.adapter_frame_control is False
+
+
+@pytest.mark.parametrize(
+    ("sensed", "expected"),
+    [
+        (4, 4),  # a short strip
+        (6, 6),
+        # 1 is what the transport reports for a strip it has already passed once, so it cannot
+        # be told from a genuine single frame — the carrier bound stands instead.
+        (1, 6),
+        (0, 6),  # nothing loaded
+        (None, 6),  # a model that cannot be asked
+    ],
+)
+def test_frame_capacity_follows_the_sensed_count(fake_nkscan: FakeNkscanModule, sensed: int | None, expected: int) -> None:
+    fake_nkscan._session = FakeSession(_DEV_ID, sensed_frames=sensed)
+
+    caps = NkscanBackend().list_devices()[0].capabilities
+
+    assert caps.adapter_frame_capacity == expected
+
+
+def test_capabilities_come_from_the_device_not_the_enumeration_table(fake_nkscan: FakeNkscanModule) -> None:
+    """list_devices reports a static per-model table, so the film area it gives is the format
+    rather than the loaded adapter's own boundaries. The session's answer wins."""
+    fake_nkscan.devices = [FakeDevice(_DEV_ID, "Nikon", "LS-50", FakeCapabilities(max_area_mm=(25.1, 36.8)))]
+    fake_nkscan._session = FakeSession(_DEV_ID, capabilities=FakeCapabilities(max_area_mm=(25.06, 37.84)))
+
+    caps = NkscanBackend().list_devices()[0].capabilities
+
+    assert caps.max_area_mm == pytest.approx((25.06, 37.84))
+
+
+def test_an_unreachable_device_falls_back_to_the_enumeration_table(fake_nkscan: FakeNkscanModule) -> None:
+    """A device already held by a scan answers nothing; enumeration must not fail over it."""
+
+    def busy(_device_id: str) -> FakeSession:
+        raise _DeviceBusy("held by something else")
+
+    fake_nkscan.Session = busy  # type: ignore[method-assign]
+    fake_nkscan.devices = [FakeDevice(_DEV_ID, "Nikon", "LS-50", FakeCapabilities(max_area_mm=(25.1, 36.8)))]
+
+    caps = NkscanBackend().list_devices()[0].capabilities
+
+    assert caps.max_area_mm == pytest.approx((25.1, 36.8))
+    assert caps.adapter_frame_capacity == 6
+
+
+@pytest.mark.parametrize(("auto_exposure", "expected"), [(True, True), (False, False)])
+def test_white_balance_lock_follows_host_side_metering(fake_nkscan: FakeNkscanModule, auto_exposure: bool, expected: bool) -> None:
+    """An LS-50 meters in firmware and takes the request silently, so the control must not show."""
+    fake_nkscan._session = FakeSession(_DEV_ID, capabilities=FakeCapabilities(auto_exposure=auto_exposure))
+
+    caps = NkscanBackend().list_devices()[0].capabilities
+
+    assert caps.supports_white_balance_lock is expected
 
 
 def test_scan_prepares_lazily_and_only_once_per_session(fake_nkscan: FakeNkscanModule) -> None:
@@ -260,6 +332,62 @@ def test_scan_frame_index_is_translated_from_1_indexed_to_0_indexed(fake_nkscan:
         session.scan(ScanParams(dpi=1000, depth=16, capture_ir=False, frame=None), lambda _: None, threading.Event())
 
     assert [c["index"] for c in session_impl.scan_calls] == [2, 0]
+
+
+@pytest.mark.parametrize(
+    ("params", "expected"),
+    [
+        (ScanParams(dpi=1000, depth=16, capture_ir=False, frame=2, frame_count=6), 6),
+        # No count declared: the table still has to reach the frame being scanned.
+        (ScanParams(dpi=1000, depth=16, capture_ir=False, frame=3), 3),
+        (ScanParams(dpi=1000, depth=16, capture_ir=False), None),  # let the transport place them
+    ],
+)
+def test_prepare_declares_every_frame_the_pass_will_address(
+    fake_nkscan: FakeNkscanModule, params: ScanParams, expected: int | None
+) -> None:
+    """One prepare covers the whole strip; a short table scans every later frame black."""
+    session_impl = FakeSession(_DEV_ID)
+    fake_nkscan._session = session_impl
+    backend = NkscanBackend()
+
+    with backend.open_session(_DEV_ID) as session:
+        session.scan(params, lambda _: None, threading.Event())
+
+    assert session_impl.prepare_calls[0]["frames"] == expected
+
+
+def test_per_frame_offsets_are_passed_through_as_a_table(fake_nkscan: FakeNkscanModule) -> None:
+    session_impl = FakeSession(_DEV_ID)
+    fake_nkscan._session = session_impl
+    backend = NkscanBackend()
+    params = ScanParams(
+        dpi=1000,
+        depth=16,
+        capture_ir=False,
+        frame=1,
+        frame_count=3,
+        frame_offset_mm=0.5,
+        frame_offsets_mm=(0.5, 0.7, 0.9),
+    )
+
+    with backend.open_session(_DEV_ID) as session:
+        session.scan(params, lambda _: None, threading.Event())
+
+    assert session_impl.prepare_calls[0]["offsets_mm"] == [0.5, 0.7, 0.9]
+
+
+def test_without_a_table_the_offset_stays_a_single_value(fake_nkscan: FakeNkscanModule) -> None:
+    session_impl = FakeSession(_DEV_ID)
+    fake_nkscan._session = session_impl
+    backend = NkscanBackend()
+    params = ScanParams(dpi=1000, depth=16, capture_ir=False, frame_offset_mm=0.4)
+
+    with backend.open_session(_DEV_ID) as session:
+        session.scan(params, lambda _: None, threading.Event())
+
+    assert session_impl.prepare_calls[0]["offsets_mm"] is None
+    assert session_impl.prepare_calls[0]["offset_mm"] == 0.4
 
 
 def test_one_shot_scan_returns_a_well_formed_result(fake_nkscan: FakeNkscanModule) -> None:

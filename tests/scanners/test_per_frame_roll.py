@@ -56,6 +56,15 @@ def test_yields_one_preview_per_slot_in_order() -> None:
     assert [p.frame for p in backend.params_seen] == [1, 2, 3]
 
 
+def test_every_preview_declares_the_whole_strip() -> None:
+    """A transport that places the table in one go needs every slot declared, or the slots
+    after the first come back black."""
+    backend = _FakeBackend()
+    list(_session(backend, device=_device(capacity=6)).preview((1, 4), cancel=threading.Event()))
+
+    assert [p.frame_count for p in backend.params_seen] == [6, 6]
+
+
 def test_previews_are_cheap_reads() -> None:
     """Previews are for looking at: 8-bit, no IR, no autofocus or metering delay."""
     backend = _FakeBackend()

@@ -503,9 +503,12 @@ class ScanSidebar(QWidget):
         # independent controls; only meaningful once there's a batch to hold
         # exposure across).
         show_lock = caps.supports_exposure_lock and has_frames
-        self.lock_white_balance_check.setVisible(show_lock)
-        self.lock_white_balance_check.setEnabled(show_lock)
-        self.lock_white_balance_check.setChecked(show_lock and self._settings.lock_white_balance)
+        # Separately gated: a scanner that meters in firmware can freeze the gain it settled on
+        # but has no say in the white balance behind it, and takes the request silently.
+        show_wb_lock = caps.supports_white_balance_lock and has_frames
+        self.lock_white_balance_check.setVisible(show_wb_lock)
+        self.lock_white_balance_check.setEnabled(show_wb_lock)
+        self.lock_white_balance_check.setChecked(show_wb_lock and self._settings.lock_white_balance)
         self.lock_exposure_check.setVisible(show_lock)
         self.lock_exposure_check.setEnabled(show_lock)
         self.lock_exposure_check.setChecked(show_lock and self._settings.lock_exposure)

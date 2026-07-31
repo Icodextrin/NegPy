@@ -76,6 +76,8 @@ class _BatchService:
         self.written_seqs: list[int] = []
         self.windows: list = []
         self.offsets: list[float] = []
+        self.frame_counts: list[int | None] = []
+        self.offset_tables: list = []
         self.eject_calls: list[str] = []
         self.session_open_calls: list[str] = []
         self.session_open_lock_white_balance: list[bool] = []
@@ -104,6 +106,8 @@ class _BatchService:
         self.frames.append(params.frame)
         self.windows.append(params.window)
         self.offsets.append(params.frame_offset_mm)
+        self.frame_counts.append(params.frame_count)
+        self.offset_tables.append(params.frame_offsets_mm)
         if self.fail_on is not None and params.frame == self.fail_on:
             raise RuntimeError("frame failed")
         if progress:
@@ -186,6 +190,40 @@ def test_batch_negative_drift_floors_the_offset_at_zero() -> None:
     worker.run_batch(req)
 
     assert service.offsets == pytest.approx([0.3, 0.05, 0.0])
+
+
+def test_batch_declares_the_table_up_to_the_furthest_frame() -> None:
+    """A transport that places every frame in one prepare needs the whole span, not the
+    count of ticked frames — a short table scans the later positions black."""
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+
+    worker.run_batch(_batch_request((2, 3, 5)))
+
+    assert service.frame_counts == [5, 5, 5]
+
+
+def test_batch_hands_the_whole_drift_table_to_the_transport() -> None:
+    """Drift reaches a one-prepare transport only as the full per-position table: it places
+    every frame before the first scan, so the later frames' offsets must be known by then."""
+    worker = ScanWorker()
+    service = _BatchService()
+    worker._service = service  # type: ignore[assignment]
+    req = BatchRequest(
+        device_id="coolscan3:test",
+        params=ScanParams(dpi=4_000, depth=16, capture_ir=False, frame_offset_mm=1.0),
+        output_folder="/tmp",
+        filename_pattern='scan-{{ "%03d" % seq }}',
+        output_format="TIFF",
+        frames=(2, 3),
+        frame_offset_modifier_mm=0.2,
+    )
+
+    worker.run_batch(req)
+
+    # Indexed from frame 1, so position 1 keeps the base offset even though it is not scanned.
+    assert service.offset_tables[0] == pytest.approx((1.0, 1.2, 1.4))
 
 
 def test_list_devices_failure_emits_the_empty_list_before_the_error() -> None:

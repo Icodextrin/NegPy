@@ -55,6 +55,7 @@ class PerFrameRollSession:
                 autofocus=False,
                 auto_exposure=False,
                 frame=slot,
+                frame_count=self.slot_count,
             )
             try:
                 result = self._backend.scan(self._device.id, params, lambda _fraction: None, cancel)

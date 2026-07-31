@@ -36,6 +36,10 @@ class ScannerCapabilities:
     multisample: tuple[int, ...] = (1,)  # supported multisample factors; (1,) = no averaging option
     single_line: bool = False  # device offers a single-line CCD scan mode
     supports_exposure_lock: bool = False  # session.lock_exposure() actually freezes something
+    # open_session(lock_white_balance=True) reaches a real control. Separate from the gain
+    # freeze above: a scanner that meters in firmware can hold a metered gain but offers no
+    # say in how it got there (an LS-50 ignores the request outright).
+    supports_white_balance_lock: bool = False
 
 
 @dataclass(frozen=True)

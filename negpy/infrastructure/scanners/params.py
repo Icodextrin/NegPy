@@ -22,6 +22,13 @@ class ScanParams:
     # frame is requested and the device has no frame option, the scan fails
     # rather than reading whatever frame is under the sensor.
     frame: int | None = None
+    # How many frame positions the pass must declare. nkscan builds a frame table covering
+    # all of them or every frame after the first comes back black; SANE ignores it.
+    frame_count: int | None = None
+    # Feed-axis offset per frame position, indexed from frame 1. Where a transport places the
+    # whole table at once (nkscan) this is the only way drift reaches it, since one prepare
+    # covers every frame. None falls back to frame_offset_mm for all of them.
+    frame_offsets_mm: tuple[float, ...] | None = None
     # Hardware auto-exposure (SANE `ae`), distinct from NegPy's rendering
     # auto-exposure. An explicit request fails if the option is unavailable.
     auto_exposure: bool = False

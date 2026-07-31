@@ -201,6 +201,12 @@ class ScanWorker(QObject):
         assertion = acquire_unattended_power_assertion("NegPy film scan batch")
         frames = list(req.frames)
         total = max(1, len(frames))
+        # The table a transport places up front spans every position up to the furthest frame,
+        # not just the ones ticked: a batch of (2, 3, 5) still has to reach position 5.
+        frame_count = max(frames, default=0) or None
+        offsets = tuple(
+            max(0.0, req.params.frame_offset_mm + position * req.frame_offset_modifier_mm) for position in range(frame_count or 0)
+        )
         paths: list[str] = []
         outcome: tuple[str, str | None] = ("finished", None)
         try:
@@ -213,7 +219,14 @@ class ScanWorker(QObject):
                         break
                     window = req.frame_windows.get(frame, req.params.window)
                     offset = max(0.0, req.params.frame_offset_mm + (frame - 1) * req.frame_offset_modifier_mm)
-                    frame_params = dataclasses.replace(req.params, frame=frame, window=window, frame_offset_mm=offset)
+                    frame_params = dataclasses.replace(
+                        req.params,
+                        frame=frame,
+                        frame_count=frame_count,
+                        frame_offsets_mm=offsets or None,
+                        window=window,
+                        frame_offset_mm=offset,
+                    )
                     base = index / total
 
                     def _progress(fraction: float, _base: float = base) -> None:

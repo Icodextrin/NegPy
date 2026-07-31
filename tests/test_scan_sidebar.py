@@ -161,6 +161,24 @@ def test_minimal_device_hides_coolscan_controls() -> None:
     assert sidebar.scan_btn.isEnabled() is True
 
 
+def test_white_balance_lock_hides_where_the_scanner_meters_itself() -> None:
+    """An LS-50 over nkscan can freeze the gain it settled on but has no say in the white
+    balance behind it — it takes the request and ignores it, so the control must not show."""
+    caps = replace(LS50_CAPS, supports_exposure_lock=True, supports_white_balance_lock=False)
+    sidebar, _ = _sidebar(replace(LS50_DEVICE, capabilities=caps))
+
+    assert sidebar.lock_white_balance_check.isVisibleTo(sidebar) is False
+    assert sidebar.lock_exposure_check.isVisibleTo(sidebar) is True
+
+
+def test_white_balance_lock_shows_where_the_host_meters() -> None:
+    caps = replace(FULL_CAPS, supports_exposure_lock=True, supports_white_balance_lock=True)
+    sidebar, _ = _sidebar(replace(FULL_DEVICE, capabilities=caps))
+
+    assert sidebar.lock_white_balance_check.isVisibleTo(sidebar) is True
+    assert sidebar.lock_exposure_check.isVisibleTo(sidebar) is True
+
+
 def test_14_bit_device_defaults_to_14_not_8() -> None:
     sidebar, _ = _sidebar(LS50_DEVICE)
     # Saved default depth 16 is not offered on an (8, 14) scanner; the combo must

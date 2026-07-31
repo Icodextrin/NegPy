@@ -18,9 +18,17 @@ logger = get_logger(__name__)
 
 _PREPARE_WAIT_FOR_MEDIA_S = 300.0
 
+# What an SA-21 strip carrier holds, used when the transport will not say. Only a bound: the
+# user narrows it with the frame range.
+_STRIP_FRAMES = 6
 
-def _caps_from_nkscan(caps) -> ScannerCapabilities:
-    """Build ScannerCapabilities from an nkscan.Capabilities. Pure — no `nkscan` import."""
+
+def _caps_from_nkscan(caps, sensed_frames: int | None = None) -> ScannerCapabilities:
+    """Build ScannerCapabilities from an nkscan.Capabilities. Pure — no `nkscan` import.
+
+    `sensed_frames` is what the loaded carrier reports, when it was readable.
+    """
+    frame_control = bool(caps.frame_control)
     return ScannerCapabilities(
         ir_channel=bool(caps.ir_channel),
         supported_dpi=tuple(sorted(int(d) for d in caps.dpi)),
@@ -29,11 +37,28 @@ def _caps_from_nkscan(caps) -> ScannerCapabilities:
         sources=(ScanMode.NEGATIVE, ScanMode.POSITIVE, ScanMode.TRANSPARENCY),
         max_area_mm=(float(caps.max_area_mm[0]), float(caps.max_area_mm[1])),
         auto_exposure=bool(caps.auto_exposure),
+        adapter_frame_capacity=_strip_capacity(sensed_frames) if frame_control else None,
+        adapter_frame_control=frame_control,
         can_eject=bool(caps.can_eject),
         multisample=tuple(sorted(int(m) for m in caps.multisample)) or (1,),
         single_line=bool(caps.single_line),
         supports_exposure_lock=True,  # every nkscan session can lock_gain()
+        # The white balance lock rides on host-side metering; a model that meters in firmware
+        # takes the request and ignores it.
+        supports_white_balance_lock=bool(caps.auto_exposure),
     )
+
+
+def _strip_capacity(sensed_frames: int | None) -> int:
+    """Frame positions to offer for a loaded carrier.
+
+    A sensed count of exactly 1 is ambiguous — the transport reports 1 both for a single frame
+    and for any strip that has already been passed once — so it falls back to the carrier bound
+    rather than collapsing the frame range after a scan.
+    """
+    if sensed_frames is not None and sensed_frames > 1:
+        return sensed_frames
+    return _STRIP_FRAMES
 
 
 def _as_scan_error(exc: Exception) -> Exception:
@@ -83,9 +108,12 @@ class NkscanSession:
             return
         try:
             self._session.prepare(
-                frames=None,  # hardware-sensed placement; the caller never declares a frame count
+                # One prepare covers the whole strip, so the table has to reach the furthest
+                # frame the caller will address or everything past the first comes back black.
+                frames=params.frame_count or params.frame,
                 pitch_mm=None,
                 offset_mm=params.frame_offset_mm,
+                offsets_mm=list(params.frame_offsets_mm) if params.frame_offsets_mm else None,
                 gain=None,  # auto-exposure; a caller freezes it afterwards via lock_exposure()
                 lock_white_balance=self._lock_white_balance,
                 wait_for_media_s=_PREPARE_WAIT_FOR_MEDIA_S,
@@ -178,17 +206,29 @@ class NkscanBackend:
         except Exception as e:
             logger.error(f"nkscan device listing failed: {e}")
             return []
-        devices = [
-            ScannerDevice(
-                id=d.id,
-                vendor=d.vendor,
-                model=d.model,
-                capabilities=_caps_from_nkscan(d.capabilities),
-            )
-            for d in raw_devices
-        ]
+        devices = [ScannerDevice(id=d.id, vendor=d.vendor, model=d.model, capabilities=self._probe(d)) for d in raw_devices]
         self._devices_cache = devices
         return devices
+
+    def _probe(self, device) -> ScannerCapabilities:
+        """Capabilities for one enumerated device, refined by the device's own answer.
+
+        `list_devices` reports a static per-model table — enumeration must not reserve a
+        scanner — so the film area it gives is the format rather than the loaded adapter's
+        boundaries (36.8 mm against the 37.84 mm an LS-50 with an SA-21 reports). A session
+        answers that and the sensed frame count from vendor pages at no mechanical cost, so
+        one open settles both. It is not always available: a device held by a running scan
+        keeps the enumeration table and the carrier bound.
+        """
+        try:
+            session = self._nkscan.Session(device.id)
+        except Exception as e:
+            logger.debug(f"Could not open {device.id} for its own capabilities: {e}")
+            return _caps_from_nkscan(device.capabilities)
+        try:
+            return _caps_from_nkscan(session.capabilities, session.sensed_frames())
+        finally:
+            session.close()
 
     def refresh_devices(self) -> list[ScannerDevice]:
         self._devices_cache = None
