@@ -84,6 +84,11 @@ class ProcessSidebar(BaseSidebar):
             "Correct trichrome narrowband RGB scans oversaturation with the bundled input profile "
             "An explicit Input ICC in Export settings overrides it",
         )
+        self.scan_setup_btn = self._icon_action(
+            "mdi6.lightbulb-on-outline",
+            "Scanning setup — set Linear RAW and Narrowband from your camera/scanner and its light source",
+            width=28,
+        )
         self.lock_bounds_btn = self._small_toggle(
             "fa5s.lock",
             "",
@@ -91,16 +96,11 @@ class ProcessSidebar(BaseSidebar):
             "Lock Bounds — freeze normalization bounds so crop and analysis sliders no longer re-analyze",
         )
         self.lock_bounds_btn.setFixedWidth(28)
-        self.scan_setup_btn = self._icon_action(
-            "mdi6.lightbulb-on-outline",
-            "Scanning setup — set Linear RAW and Narrowband from your camera/scanner and its light source",
-            width=28,
-        )
         raw_row = QHBoxLayout()
         raw_row.addWidget(self.linear_raw_btn, 1)
         raw_row.addWidget(self.narrowband_scan_btn, 1)
-        raw_row.addWidget(self.lock_bounds_btn)
         raw_row.addWidget(self.scan_setup_btn)
+        raw_row.addWidget(self.lock_bounds_btn)
         self.layout.addLayout(raw_row)
 
         mode_row = QHBoxLayout()
