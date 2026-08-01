@@ -1,7 +1,7 @@
 import os
 import time
 from dataclasses import dataclass, fields, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import Q_ARG, QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal
@@ -195,6 +195,8 @@ class AppController(QObject):
     grain_focuser_changed = pyqtSignal(bool)
     strip_requested = pyqtSignal(TestStripTask)
     test_strip_changed = pyqtSignal(bool)  # True = mosaic is up, False = cleared or building
+    zone_pins_changed = pyqtSignal()
+    zone_arm_changed = pyqtSignal(object)  # armed zone, or None
     asset_discovery_requested = pyqtSignal(AssetDiscoveryTask)
     stitch_requested = pyqtSignal(object)
     thumbnail_requested = pyqtSignal(list)
@@ -363,6 +365,9 @@ class AppController(QObject):
         self._render_debounce.timeout.connect(self.request_render)
 
         self._crop_bounds_dirty = False
+        self._zone_preview_shown = False
+        self._pin_dragging = False
+        self._pin_solution: Optional[Any] = None
 
         self._cursor_readout_timer = QTimer()
         self._cursor_readout_timer.setSingleShot(True)
@@ -420,12 +425,24 @@ class AppController(QObject):
 
     def _compute_densitometer_reading(self, nx: float, ny: float, display_rgb: tuple) -> Optional[Any]:
         """Probe the normalized-log frame under the cursor; None when unavailable."""
-        from negpy.features.exposure.densitometer import compute_reading, map_display_to_norm
+        from negpy.features.exposure.densitometer import compute_reading
+
+        bounds = self.state.last_metrics.get("final_bounds") or self.state.last_metrics.get("log_bounds")
+        if bounds is None:
+            return None
+        val = self._sample_normalized_log(nx, ny)
+        if val is None:
+            return None
+        return compute_reading(val, bounds, display_rgb)
+
+    def _sample_normalized_log(self, nx: float, ny: float, radius: int = 0) -> Optional[Tuple[float, float, float]]:
+        """Mean of the (2·radius+1)² normalized-log patch at content-normalized nx,ny;
+        None when no frame is probed. Shared by the hover probe (1×1) and zone pins."""
+        from negpy.features.exposure.densitometer import map_display_to_norm
 
         metrics = self.state.last_metrics
         nl = metrics.get("normalized_log")
-        bounds = metrics.get("final_bounds") or metrics.get("log_bounds")
-        if nl is None or bounds is None or self.canvas is None:
+        if nl is None or self.canvas is None:
             return None
         disp = self.canvas.display_size()
         if disp is None:
@@ -450,14 +467,17 @@ class AppController(QObject):
         if pos is None:
             return None
         x, y = pos
+        x0, x1 = max(0, x - radius), min(norm_w, x + radius + 1)
+        y0, y1 = max(0, y - radius), min(norm_h, y + radius + 1)
         try:
             if isinstance(nl, np.ndarray):
-                val = nl[y, x]
+                val = nl[y0:y1, x0:x1].reshape(-1, nl.shape[2]).mean(axis=0)
             else:
-                val = nl.readback_region(x, y, 1, 1)[0, 0]
+                region = np.asarray(nl.readback_region(x0, y0, x1 - x0, y1 - y0), dtype=np.float32)
+                val = region[..., :3].reshape(-1, 3).mean(axis=0)
         except Exception:
             return None
-        return compute_reading((float(val[0]), float(val[1]), float(val[2])), bounds, display_rgb)
+        return (float(val[0]), float(val[1]), float(val[2]))
 
     def set_status(self, message: str, timeout: int = 0) -> None:
         self.status_message_requested.emit(message, timeout)
@@ -1017,8 +1037,10 @@ class AppController(QObject):
         self._preview_load_t0 = time.perf_counter()
         self._requested_file_path = file_path
         # A strip belongs to one frame, and the memo fast path below repaints without
-        # going through request_render — so drop it here, not only there.
+        # going through request_render — so drop it here, not only there. Zone pins
+        # froze their sample from this frame, so they go the same way.
         self._clear_test_strip()
+        self._drop_zone_pins()
 
         # Navigate-back fast path: the frame's last render is memoized and nothing
         # that shaped it has changed (select_file already hydrated its config), so
@@ -1221,6 +1243,8 @@ class AppController(QObject):
             self._handle_wb_pick(nx, ny)
         elif self.state.active_tool == ToolMode.DUST_PICK:
             self._handle_dust_pick(nx, ny)
+        elif self.state.active_tool == ToolMode.ZONE_PLACE:
+            self._handle_zone_pin(nx, ny)
 
     def set_active_tool(self, mode: ToolMode) -> None:
         # Both the crop and analysis-region tools show the full uncropped frame, so
@@ -1228,8 +1252,11 @@ class AppController(QObject):
         uncropped = {ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW}
         preview_mode_changed = (self.state.active_tool in uncropped) != (mode in uncropped)
         leaving_crop = self.state.active_tool == ToolMode.CROP_MANUAL and mode != ToolMode.CROP_MANUAL
+        leaving_zone_place = self.state.active_tool == ToolMode.ZONE_PLACE and mode != ToolMode.ZONE_PLACE
         self.state.active_tool = mode
         self.tool_sync_requested.emit()
+        if leaving_zone_place:
+            self.clear_zone_pins()
         if leaving_crop and self._crop_bounds_dirty:
             # Recompute bounds once now the final crop is committed.
             new_proc = replace(self.state.config.process, **invalidate_local_bounds(self.state.config.process))
@@ -1282,6 +1309,215 @@ class AppController(QObject):
         holds, so no re-render is needed."""
         self.state.grain_focuser = (not self.state.grain_focuser) if force is None else bool(force)
         self.grain_focuser_changed.emit(self.state.grain_focuser)
+
+    def arm_zone_target(self, zone: float) -> None:
+        """Zone picked on the strip: the next canvas click prints that spot there.
+        Picking the armed zone again disarms."""
+        if self.state.preview_raw is None:
+            return
+        if self.state.zone_arm_target == float(zone):
+            self._disarm_zone_target()
+            return
+        # Same reason compare, the peek and the strip are exclusive: they all want the canvas.
+        restore = self.state.compare_mode or self.state.flat_peek
+        if self.state.compare_mode:
+            self.state.compare_mode = False
+            self.compare_changed.emit(False)
+        if self.state.flat_peek:
+            self.state.flat_peek = False
+            self.flat_peek_changed.emit(False)
+        self._clear_test_strip()
+        if restore:
+            self.request_render()
+        self.state.zone_arm_target = float(zone)
+        self.set_active_tool(ToolMode.ZONE_PLACE)
+        self.zone_arm_changed.emit(self.state.zone_arm_target)
+
+    def _disarm_zone_target(self) -> None:
+        """Drop the armed zone, and the tool with it when no pins remain."""
+        armed = self.state.zone_arm_target is not None
+        self.state.zone_arm_target = None
+        if armed:
+            self.zone_arm_changed.emit(None)
+        if not self.state.zone_pins and self.state.active_tool == ToolMode.ZONE_PLACE:
+            self.set_active_tool(ToolMode.NONE)
+
+    def _handle_zone_pin(self, nx: float, ny: float) -> None:
+        """Armed: the pin takes the zone picked on the strip. Unarmed: it takes the zone
+        it already reads, so a bare click meters without moving the print."""
+        from negpy.domain.types import LUMA_B, LUMA_G, LUMA_R
+        from negpy.features.exposure.placement import ZonePin
+
+        val = self._sample_normalized_log(nx, ny, radius=2)
+        if val is None:
+            return
+        armed = self.state.zone_arm_target
+        val_luma = LUMA_R * val[0] + LUMA_G * val[1] + LUMA_B * val[2]
+        target = armed if armed is not None else round(self._pin_zone(val_luma) * 3.0) / 3.0
+        pin = ZonePin(
+            nx=nx,
+            ny=ny,
+            val_rgb=val,
+            val_luma=val_luma,
+            target_zone=target,
+            retargeted=armed is not None,
+        )
+        pins = self.state.zone_pins
+        if len(pins) < 2:
+            pins.append(pin)
+        else:
+            nearest = min(range(len(pins)), key=lambda i: (pins[i].nx - nx) ** 2 + (pins[i].ny - ny) ** 2)
+            pins[nearest] = pin
+        if armed is not None:
+            self.state.zone_arm_target = None
+            self.zone_arm_changed.emit(None)
+        self._refresh_pin_labels()
+        self.zone_pins_changed.emit()
+        if armed is not None:
+            self._preview_zone_solution()
+
+    def move_zone_pin(self, index: int, nx: float, ny: float, final: bool = False) -> None:
+        """Drag a pin: re-samples the tone under it. An untargeted pin re-snaps to the
+        new reading, a retargeted one keeps its zone, and the solve waits for `final`."""
+        from negpy.domain.types import LUMA_B, LUMA_G, LUMA_R
+
+        pins = self.state.zone_pins
+        if not 0 <= index < len(pins):
+            return
+        self._pin_dragging = not final
+        val = self._sample_normalized_log(nx, ny, radius=2)
+        if val is not None:
+            pin = pins[index]
+            val_luma = LUMA_R * val[0] + LUMA_G * val[1] + LUMA_B * val[2]
+            target = pin.target_zone if pin.retargeted else round(self._pin_zone(val_luma) * 3.0) / 3.0
+            pins[index] = replace(pin, nx=nx, ny=ny, val_rgb=val, val_luma=val_luma, target_zone=target)
+            self._refresh_pin_labels()
+        self.zone_pins_changed.emit()
+        if final and self._zone_preview_shown:
+            self._preview_zone_solution()
+
+    def _pin_zone(self, val_luma: float) -> float:
+        from negpy.features.exposure.placement import predicted_zone
+
+        return predicted_zone(
+            self.state.config.exposure,
+            self.state.config.process.process_mode,
+            self.state.last_metrics,
+            val_luma,
+        )
+
+    def _solve_zone_placement(self) -> Optional[Any]:
+        from negpy.features.exposure.placement import solve_placement
+
+        if not self.state.zone_pins:
+            return None
+        return solve_placement(
+            self.state.config.exposure,
+            self.state.config.process.process_mode,
+            self.state.last_metrics,
+            self.state.zone_pins,
+        )
+
+    def _refresh_pin_labels(self) -> None:
+        """Re-read each pin's zone through the current curve. Called before every
+        zone_pins_changed emit: the overlay and the sidebar repaint in connection
+        order, so the label cannot be left to whichever runs first."""
+        from negpy.features.exposure.densitometer import zone_roman
+
+        pins = self.state.zone_pins
+        for i, pin in enumerate(pins):
+            label = zone_roman(self._pin_zone(pin.val_luma))
+            if pin.label != label:
+                pins[i] = replace(pin, label=label)
+
+    def zone_pin_readouts(self) -> List[Tuple[int, str, float, Optional[str], bool]]:
+        """Sidebar rows: (index, measured roman, target zone, achieved roman when the
+        target is out of the paper's scale, solvable). Refreshes each pin's canvas label."""
+        from negpy.features.exposure.densitometer import zone_roman
+
+        pins = self.state.zone_pins
+        if not pins:
+            self._pin_solution = None
+            return []
+        self._refresh_pin_labels()
+        # The two-pin nested bisection costs ~15 ms, too slow per mouse-move: mid-drag
+        # the last solve stands in, and the drag's end recomputes it.
+        if not self._pin_dragging:
+            self._pin_solution = self._solve_zone_placement()
+        sol = self._pin_solution
+        rows = []
+        for i, pin in enumerate(pins):
+            achieved = zone_roman(sol.achieved[i]) if sol is not None and sol.clamped and i < len(sol.achieved) else None
+            rows.append((i, pin.label, pin.target_zone, achieved, sol is not None))
+        return rows
+
+    def set_zone_pin_target(self, index: int, zone: float) -> None:
+        """Retarget one pin and preview the solved exposure without committing it."""
+        pins = self.state.zone_pins
+        if not 0 <= index < len(pins):
+            return
+        pins[index] = replace(pins[index], target_zone=min(max(float(zone), 0.0), 10.0), retargeted=True)
+        self.zone_pins_changed.emit()
+        self._preview_zone_solution()
+
+    def _preview_zone_solution(self) -> None:
+        sol = self._solve_zone_placement()
+        if sol is None:
+            return
+        self._pin_solution = sol
+        self._zone_preview_shown = True
+        self.request_render(
+            readback_metrics=False,
+            config_override=replace(self.state.config, exposure=replace(self.state.config.exposure, **sol.fields)),
+        )
+
+    def apply_zone_placement(self) -> None:
+        """Commit the solved Print Density (and Grade) and put the tool down. The autos
+        it replaces go off: one left on would re-move the placed tones."""
+        sol = self._solve_zone_placement()
+        if sol is None:
+            return
+        self._zone_preview_shown = False
+        self.session.update_config(
+            replace(self.state.config, exposure=replace(self.state.config.exposure, **sol.fields)),
+            persist=True,
+        )
+        self.set_active_tool(ToolMode.NONE)  # drops the pins; no preview left to restore
+        self.request_render()
+
+    def remove_zone_pin(self, index: int) -> None:
+        """Drop one pin; what remains re-solves. Dropping the last one puts the committed
+        print back and the tool down."""
+        pins = self.state.zone_pins
+        if not 0 <= index < len(pins):
+            return
+        pins.pop(index)
+        self._pin_solution = None
+        self._refresh_pin_labels()
+        self.zone_pins_changed.emit()
+        if not pins:
+            self.set_active_tool(ToolMode.NONE)
+        elif self._zone_preview_shown:
+            self._preview_zone_solution()
+
+    def clear_zone_pins(self) -> None:
+        """Drop the pins; restores the committed edit if a preview was on the canvas."""
+        restore = self._zone_preview_shown
+        self._drop_zone_pins()
+        if restore:
+            self.request_render()
+
+    def _drop_zone_pins(self) -> None:
+        if self.state.zone_arm_target is not None:
+            self.state.zone_arm_target = None
+            self.zone_arm_changed.emit(None)
+        if not self.state.zone_pins and not self._zone_preview_shown:
+            return
+        self.state.zone_pins.clear()
+        self._zone_preview_shown = False
+        self._pin_dragging = False
+        self._pin_solution = None
+        self.zone_pins_changed.emit()
 
     def toggle_ring_around(self, force: Optional[bool] = None) -> None:
         """Print (or clear) the colour ring-around — the M/Y filtration proof."""
@@ -2667,9 +2903,10 @@ class AppController(QObject):
 
         # The strip's patches were printed from the config as it stood; once the edit
         # moves they are a proof of something else, so drop them (this also cancels a
-        # strip still building).
+        # strip still building). Zone pins die the same way.
         if config_override is None:
             self._clear_test_strip()
+            self._drop_zone_pins()
 
         if self.state.preview_raw is None:
             return

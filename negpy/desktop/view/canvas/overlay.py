@@ -1,6 +1,6 @@
 import math
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -61,6 +61,9 @@ _ZONE_CLIP_COLOR = QColor(220, 80, 80)  # paper black / paper white, same red th
 _STRIP_LABEL_MIN_PX = 34.0  # below this patch size the two axis labels overlap
 _STRIP_LABEL_INSET_PX = 6.0
 
+_PIN_RADIUS_PX = 7.0  # zone-placement pin ring
+_PIN_GRAB_PX = 16.0  # grab radius, wider than the drawn ring
+
 _LOUPE_RADIUS_PX = 128.0
 # Device px per buffer px inside the glass. At fit-zoom on a 1600 px buffer the canvas
 # already shows ~0.75 device px per buffer px, so a literal 1:1 loupe would magnify ~1.3x —
@@ -77,6 +80,16 @@ def loupe_src_rect(buf_w: int, buf_h: int, cx: float, cy: float, side: float) ->
     x = min(max(cx - side / 2.0, 0.0), max(buf_w - side, 0.0))
     y = min(max(cy - side / 2.0, 0.0), max(buf_h - side, 0.0))
     return QRectF(x, y, side, side)
+
+
+def zone_pin_caption(index: int, pin: Any) -> str:
+    """`1 · IV⅓ → VI`: what the pin reads now, and the zone it is asked to print on
+    while the two differ."""
+    from negpy.features.exposure.densitometer import zone_roman
+
+    head = f"{index + 1} · {pin.label}" if pin.label else f"{index + 1}"
+    target = zone_roman(pin.target_zone)
+    return f"{head} → {target}" if pin.label and target != pin.label else head
 
 
 def _overlay_label_font(painter: QPainter):
@@ -150,6 +163,8 @@ class CanvasOverlay(QWidget):
     local_vertex_deleted = pyqtSignal(int, int)  # (mask index, vertex index)
     straighten_completed = pyqtSignal(float)  # fine-rotation delta, stored convention (CCW+)
     test_strip_picked = pyqtSignal(int, int)  # (row, col) of the clicked patch
+    zone_pin_moved = pyqtSignal(int, float, float, bool)  # (pin index, nx, ny, drag ended)
+    zone_placement_confirmed = pyqtSignal()  # Enter over the canvas: commit the solved print
 
     def __init__(self, state: AppState, parent=None):
         super().__init__(parent)
@@ -225,6 +240,9 @@ class CanvasOverlay(QWidget):
         # Straighten tool: reference-line drag (press -> drag -> release applies).
         self._straighten_p1: Optional[QPointF] = None
         self._straighten_p2: Optional[QPointF] = None
+
+        # Zone-placement pin being dragged (the controller re-reads the tone as it moves).
+        self._pin_drag_index: Optional[int] = None
 
         self.zoom_level: float = 1.0
         self.pan_x: float = 0.0
@@ -322,6 +340,8 @@ class CanvasOverlay(QWidget):
         if mode != ToolMode.STRAIGHTEN:
             self._straighten_p1 = None
             self._straighten_p2 = None
+        if mode != ToolMode.ZONE_PLACE:
+            self._pin_drag_index = None
         self.update()
 
     def _end_local_edit(self) -> None:
@@ -546,6 +566,11 @@ class CanvasOverlay(QWidget):
             self._draw_test_strip(painter)
         elif self.state.zones_overlay and content_aligned:
             self._draw_zone_grid(painter)
+
+        # Pins are content-anchored, so they hide with the strip (whose mosaic
+        # replaces the frame) and in the uncropped tool views.
+        if self.state.zone_pins and content_aligned and not self.state.test_strip:
+            self._draw_zone_pins(painter)
 
         if self._rotation_grid_visible:
             self._draw_rotation_grid(painter, visible_rect)
@@ -780,6 +805,31 @@ class CanvasOverlay(QWidget):
             painter.drawText(cell.translated(1.0, 1.0), Qt.AlignmentFlag.AlignCenter, label)
             painter.setPen(_ZONE_CLIP_COLOR if zone in (0, 10) else label_white)
             painter.drawText(cell, Qt.AlignmentFlag.AlignCenter, label)
+        painter.restore()
+
+    def _draw_zone_pins(self, painter: QPainter) -> None:
+        """Zone-placement pins: a numbered ring per probed spot with its caption."""
+        shadow = QColor(0, 0, 0, 160)
+        painter.save()
+        painter.setFont(_overlay_label_font(painter))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for i, (pin, p) in enumerate(zip(self.state.zone_pins, self._zone_pin_screen_points())):
+            colour = QColor(THEME.accent_primary) if i == 0 else QColor(255, 255, 255, 230)
+            radius = _PIN_RADIUS_PX + (2.0 if i == self._pin_drag_index else 0.0)
+            for pen_colour, width in ((shadow, 3.5), (colour, 1.5)):
+                pen = QPen(pen_colour, width)
+                pen.setCosmetic(True)
+                painter.setPen(pen)
+                painter.drawEllipse(p, radius, radius)
+                # Centre dot: the ring alone leaves the exact probed pixel to guesswork.
+                painter.drawEllipse(p, width * 0.25, width * 0.25)
+            label = zone_pin_caption(i, pin)
+            tr = QRectF(p.x() + radius + 4.0, p.y() - 11.0, 140.0, 22.0)
+            align = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            painter.setPen(shadow)
+            painter.drawText(tr.translated(1.0, 1.0), align, label)
+            painter.setPen(colour)
+            painter.drawText(tr, align, label)
         painter.restore()
 
     def _draw_grain_loupe(self, painter: QPainter) -> None:
@@ -1671,12 +1721,47 @@ class CanvasOverlay(QWidget):
             event.accept()
             return
 
+        # A placed pin is a handle: grabbing one drags it, so only a press on bare
+        # frame drops a new pin.
+        if self._tool_mode == ToolMode.ZONE_PLACE:
+            hit = self._hit_zone_pin(event.position())
+            if hit is not None:
+                self._pin_drag_index = hit
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+
         coords = self._map_to_image_coords(event.position())
         if coords:
             self.clicked.emit(*coords)
             if self._tool_mode == ToolMode.CROP_MANUAL:
                 self._start_crop_drag(event.position())
             self.update()
+
+    def _zone_pin_screen_points(self) -> List[QPointF]:
+        rect = self._content_view_rect()
+        if rect.isEmpty():
+            return []
+        return [QPointF(rect.x() + p.nx * rect.width(), rect.y() + p.ny * rect.height()) for p in self.state.zone_pins]
+
+    def _hit_zone_pin(self, pos: QPointF) -> Optional[int]:
+        """Index of the pin under `pos` (nearest wins when they overlap), else None."""
+        best, best_d = None, _PIN_GRAB_PX * _PIN_GRAB_PX
+        for i, p in enumerate(self._zone_pin_screen_points()):
+            d = (pos.x() - p.x()) ** 2 + (pos.y() - p.y()) ** 2
+            if d <= best_d:
+                best, best_d = i, d
+        return best
+
+    def _clamped_content_norm(self, pos: QPointF) -> Optional[Tuple[float, float]]:
+        """Content-normalized `pos`, clamped to the frame so a drag past the edge keeps
+        tracking."""
+        rect = self._content_view_rect()
+        if rect.isEmpty():
+            return None
+        px = float(np.clip(pos.x(), rect.left(), rect.right()))
+        py = float(np.clip(pos.y(), rect.top(), rect.bottom()))
+        return (px - rect.x()) / rect.width(), (py - rect.y()) / rect.height()
 
     def _start_analysis_drag(self, pos: QPointF) -> None:
         if self._view_rect.isEmpty():
@@ -1758,6 +1843,19 @@ class CanvasOverlay(QWidget):
         if self._tool_mode in (ToolMode.DUST_PICK, ToolMode.SCRATCH_PICK, ToolMode.WB_PICK):
             if coords is None:
                 self.setCursor(Qt.CursorShape.ArrowCursor)
+            else:
+                self.unsetCursor()
+
+        if self._tool_mode == ToolMode.ZONE_PLACE:
+            if self._pin_drag_index is not None:
+                norm = self._clamped_content_norm(event.position())
+                if norm is not None:
+                    self.zone_pin_moved.emit(self._pin_drag_index, norm[0], norm[1], False)
+                event.accept()
+                return
+            # Unset over bare frame so the widget inherits the tool's crosshair.
+            if self._hit_zone_pin(event.position()) is not None:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
             else:
                 self.unsetCursor()
 
@@ -2035,6 +2133,8 @@ class CanvasOverlay(QWidget):
         elif self._tool_mode == ToolMode.CROP_MANUAL:
             self._end_crop_drag()
             self.crop_confirmed.emit()
+        elif self._tool_mode == ToolMode.ZONE_PLACE and self.state.zone_pins:
+            self.zone_placement_confirmed.emit()
 
     def has_scratch_points(self) -> bool:
         return bool(self._scratch_pts)
@@ -2104,6 +2204,16 @@ class CanvasOverlay(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._pin_drag_index is not None:
+            index, self._pin_drag_index = self._pin_drag_index, None
+            norm = self._clamped_content_norm(event.position())
+            if norm is not None:
+                self.zone_pin_moved.emit(index, norm[0], norm[1], True)
+            self.unsetCursor()
+            self.update()
+            event.accept()
+            return
+
         if self.parent()._is_panning:
             self.parent()._is_panning = False
             self.parent().reset_tool_cursor()

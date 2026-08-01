@@ -29,6 +29,7 @@ class ToolMode(Enum):
     LOCAL_DRAW = auto()
     ANALYSIS_DRAW = auto()
     STRAIGHTEN = auto()
+    ZONE_PLACE = auto()
 
 
 @dataclass
@@ -105,6 +106,13 @@ class AppState:
 
     # Grain focuser: 1:1-ish loupe following the cursor; display-only, session-only.
     grain_focuser: bool = False
+
+    # Zone-placement pins (ZonePin: probed spot + target zone); session-only, dropped
+    # by any real render like the test strip. Never persisted.
+    zone_pins: List[Any] = field(default_factory=list)
+
+    # Zone picked on the strip and waiting for the canvas click that spends it.
+    zone_arm_target: Optional[float] = None
 
     # Density x grade test strip: session-only proof, dropped by any real render. The
     # mosaic is the assembled patches at preview resolution, content_rect its picture area.
