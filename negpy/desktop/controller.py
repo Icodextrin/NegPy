@@ -1,7 +1,7 @@
 import os
 import time
 from dataclasses import dataclass, fields, replace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import Q_ARG, QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal
@@ -101,6 +101,8 @@ class _PendingCaptureImport:
 
     process_mode: Optional[ProcessMode] = None
     detect_mode: bool = False
+    capture_roll: str = ""
+    capture_frame: Optional[int] = None
 
 
 def _capture_import_key(path: str) -> str:
@@ -305,6 +307,7 @@ class AppController(QObject):
         self._autocrop_dispatched = 0
         self._autocrop_preflight_skipped = 0
         self._autocrop_cancel_requested = False
+        self.flush_export_settings: Optional[Callable[[], None]] = None
 
         self.preview_service = PreviewManager()
         self.batch_autocrop_preview_service = PreviewManager()
@@ -1084,6 +1087,17 @@ class AppController(QObject):
                 **invalidate_local_bounds(process),
             )
             self.state.config = replace(self.state.config, process=process)
+            self.state.is_dirty = True
+        if pending_import is not None and (pending_import.capture_roll or pending_import.capture_frame is not None):
+            meta = self.state.config.metadata
+            self.state.config = replace(
+                self.state.config,
+                metadata=replace(
+                    meta,
+                    capture_roll=pending_import.capture_roll or meta.capture_roll,
+                    capture_frame=(pending_import.capture_frame if pending_import.capture_frame is not None else meta.capture_frame),
+                ),
+            )
             self.state.is_dirty = True
 
         rgbscan = self.state.config.rgbscan
@@ -2805,18 +2819,31 @@ class AppController(QObject):
         # RGB-Scan (triplet merge) is on only for an actual RGB triplet — off for a single
         # white-light slide OR a normal (non-Scanlight) camera scan.
         self.session.repo.save_global_setting("rgbscan_mode", rgb and not white)
+        capture_roll = getattr(req, "roll_name", "") if req is not None else ""
+        capture_frame = getattr(req, "frame_number", None) if req is not None else None
         if white:  # slides/B&W force a positive process
             mode = (req.white_process_mode or "auto").lower()
             target = {"e-6": ProcessMode.E6, "b&w": ProcessMode.BW}.get(mode)
             self._pending_capture_imports[_capture_import_key(paths[0])] = _PendingCaptureImport(
                 process_mode=target,
                 detect_mode=target is None,
+                capture_roll=capture_roll,
+                capture_frame=capture_frame,
             )
         elif rgb:
             # Independently exposed RGB channels have no broadband orange-mask signal for
             # the normal classifier. They are negative scans unless capture metadata says
             # otherwise, so carry C-41 through discovery instead of guessing from the merge.
-            self._pending_capture_imports[_capture_import_key(paths[0])] = _PendingCaptureImport(process_mode=ProcessMode.C41)
+            self._pending_capture_imports[_capture_import_key(paths[0])] = _PendingCaptureImport(
+                process_mode=ProcessMode.C41,
+                capture_roll=capture_roll,
+                capture_frame=capture_frame,
+            )
+        elif req is not None:
+            self._pending_capture_imports[_capture_import_key(paths[0])] = _PendingCaptureImport(
+                capture_roll=capture_roll,
+                capture_frame=capture_frame,
+            )
         self._pending_scanned_file = paths[0]
         self.request_asset_discovery(list(paths))
 
@@ -3181,6 +3208,11 @@ class AppController(QObject):
         self.session.jump_to_step(index)
         self.request_export()
 
+    def _flush_export_ui(self) -> None:
+        """Push pending Export-panel edits into state before any export path reads config."""
+        flush = self.flush_export_settings
+        if flush is not None:
+            flush()
     def request_linear_output_export(self, files: list[dict] | None = None) -> None:
         """Export decoded linear buffers as untagged 16-bit TIFFs to the export folder."""
         from negpy.services.export.linear_output import export_linear_output, is_linear_output_supported
@@ -3228,6 +3260,7 @@ class AppController(QObject):
 
     def request_export(self) -> None:
         """Exports the current file using the settings currently shown in the Export panel."""
+        self._flush_export_ui()
         if self._batch_busy("export"):
             return
         if not self.state.current_file_path:
@@ -3274,6 +3307,7 @@ class AppController(QObject):
 
     def request_batch_export(self, override_settings: bool = False, files: list[dict] | None = None) -> None:
         """Batch-exports the given files (all visible by default) using current settings, optionally applied to all."""
+        self._flush_export_ui()
         if self._batch_busy("export"):
             return
         export_path = self._ensure_valid_export_path()
@@ -3415,6 +3449,7 @@ class AppController(QObject):
         return reply == QMessageBox.StandardButton.Yes
 
     def _dispatch_preset_export(self, files: list[dict]) -> None:
+        self._flush_export_ui()
         if self._batch_busy("export"):
             return
         if not files:
@@ -3481,6 +3516,7 @@ class AppController(QObject):
 
     def request_contact_sheet(self) -> None:
         """Renders all visible files small and writes darkroom contact sheet(s)."""
+        self._flush_export_ui()
         if self._batch_busy("contact sheet"):
             return
         visible_files = [self.state.uploaded_files[i] for i in self.session.asset_model.visible_actual_indices_ordered()]

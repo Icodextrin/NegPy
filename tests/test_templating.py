@@ -1,6 +1,7 @@
 from datetime import datetime
 from negpy.domain.models import ExportConfig, ExportFormat, ExportResolutionMode
-from negpy.services.export.templating import render_export_filename
+from negpy.features.metadata.models import MetadataConfig
+from negpy.services.export.templating import parse_capture_stem, render_export_filename
 
 
 # ── Existing tests (unchanged behavior) ──────────────────────────────────────
@@ -171,3 +172,128 @@ def test_invalid_pattern_fallback_preserves_original_name():
     """Fallback path (bad template) gives verbatim original_name."""
     conf = ExportConfig(filename_pattern="{{ invalid_var }}")
     assert render_export_filename("IMG-0001.orf", conf) == "IMG-0001"
+
+
+# ── Metadata / capture-roll variables ─────────────────────────────────────────
+
+
+def test_gear_vars_render():
+    meta = MetadataConfig(
+        camera_make="Mamiya",
+        camera_model="7",
+        lens_model="80mm f/4",
+        film="Portra 400",
+        film_iso=400,
+        film_manufacturer="Kodak",
+        format="35mm",
+        developer="D-76 1+1",
+        push_pull=1,
+        scanning="DSLR copy-stand",
+        exposure_override="1/125s f/2.8",
+        focal_length_mm=80.0,
+    )
+    conf = ExportConfig(
+        filename_pattern=(
+            "{{ film }}_{{ film_iso }}_{{ camera }}_{{ lens }}_{{ focal_length }}_"
+            "{{ film_format }}_{{ developer }}_{{ push_pull }}_{{ scanning }}_{{ exposure }}_"
+            "{{ original_name }}"
+        )
+    )
+    result = render_export_filename("DSC0123.orf", conf, metadata=meta)
+    assert result == ("Portra_400_400_Mamiya_7_80mm_f4_80_35mm_D_76_1+1_1_DSLR_copy_stand_1125s_f2.8_DSC0123")
+
+
+def test_empty_gear_collapses_separators():
+    conf = ExportConfig(filename_pattern="{{ film }}_{{ camera }}_{{ original_name }}_end")
+    result = render_export_filename("shot.jpg", conf, metadata=MetadataConfig())
+    assert result == "shot_end"
+
+
+def test_format_vs_film_format_no_collision():
+    meta = MetadataConfig(format="120")
+    conf = ExportConfig(
+        export_fmt=ExportFormat.JPEG,
+        filename_pattern="{{ original_name }}_{{ format }}_{{ film_format }}",
+    )
+    result = render_export_filename("img.jpg", conf, metadata=meta)
+    assert result == "img_JPEG_120"
+
+
+def test_film_format_other():
+    meta = MetadataConfig(format="Other", format_other="6×7")
+    conf = ExportConfig(filename_pattern="{{ film_format }}_{{ original_name }}")
+    assert render_export_filename("img.jpg", conf, metadata=meta) == "6×7_img"
+
+
+def test_roll_frame_from_metadata():
+    meta = MetadataConfig(capture_roll="Summer24", capture_frame=7)
+    conf = ExportConfig(filename_pattern='{{ roll }}_Frame{{ "%03d" % frame }}_{{ original_name }}')
+    result = render_export_filename("ignored_name.tif", conf, metadata=meta)
+    assert result == "Summer24_Frame007_ignored_name"
+
+
+def test_roll_frame_parse_fallback_from_stem():
+    conf = ExportConfig(filename_pattern='{{ roll }}_Frame{{ "%03d" % frame }}_{{ film }}')
+    result = render_export_filename(
+        "/rolls/Roll001_Frame012.tif",
+        conf,
+        metadata=MetadataConfig(film="Portra"),
+    )
+    assert result == "Roll001_Frame012_Portra"
+
+
+def test_metadata_roll_wins_over_stem_parse():
+    meta = MetadataConfig(capture_roll="ManualRoll", capture_frame=3)
+    conf = ExportConfig(filename_pattern="{{ roll }}_{{ frame }}")
+    result = render_export_filename("Roll001_Frame012.tif", conf, metadata=meta)
+    assert result == "ManualRoll_3"
+
+
+def test_path_unsafe_chars_sanitized():
+    meta = MetadataConfig(camera_model='Foo/Bar:Baz*?"<>|', film="A\\B")
+    conf = ExportConfig(filename_pattern="{{ camera_model }}_{{ film }}_{{ original_name }}")
+    result = render_export_filename("shot.jpg", conf, metadata=meta)
+    assert result == "FooBarBaz_AB_shot"
+    assert "/" not in result
+    assert ":" not in result
+    assert "*" not in result
+
+
+def test_half_frame_with_metadata():
+    meta = MetadataConfig(film="HP5", capture_roll="R1", capture_frame=1)
+    conf = ExportConfig(filename_pattern="{{ roll }}_{{ film }}_{{ original_name }}")
+    result = render_export_filename("/x/IMG420.tif", conf, half=2, metadata=meta)
+    assert result == "R1_HP5_IMG420_2"
+
+
+def test_parse_capture_stem():
+    assert parse_capture_stem("Roll001_Frame012") == ("Roll001", 12)
+    assert parse_capture_stem("roll001_frame7") == ("roll001", 7)
+    assert parse_capture_stem("DSC0123") == ("", None)
+
+
+def test_pad_filter_with_missing_frame_keeps_other_vars():
+    """Missing frame must not abort the whole pattern when using |pad."""
+    meta = MetadataConfig(capture_roll="Summer24", film="Portra", film_iso=400)
+    conf = ExportConfig(filename_pattern="{{ roll }}_Frame{{ frame|pad(3) }}_{{ film }}_{{ film_iso }}_{{ original_name }}")
+    result = render_export_filename("HighDef2 (3).tif", conf, metadata=meta)
+    assert result == "Summer24_Frame_Portra_400_HighDef2 (3)"
+
+
+def test_frame_padded_var():
+    meta = MetadataConfig(capture_frame=12)
+    conf = ExportConfig(filename_pattern="{{ frame_padded }}_{{ original_name }}")
+    assert render_export_filename("shot.tif", conf, metadata=meta) == "012_shot"
+
+
+def test_percent_format_missing_frame_falls_back_to_original_name():
+    """Legacy '%03d' % frame with unset frame still falls back (documented limitation)."""
+    conf = ExportConfig(filename_pattern='{{ roll }}_Frame{{ "%03d" % frame }}_{{ original_name }}')
+    result = render_export_filename("HighDef2 (3).tif", conf, metadata=MetadataConfig(capture_roll="R1"))
+    assert result == "HighDef2 (3)"
+
+
+def test_percent_format_with_frame_set():
+    meta = MetadataConfig(capture_roll="R1", capture_frame=12)
+    conf = ExportConfig(filename_pattern='{{ roll }}_Frame{{ "%03d" % frame }}')
+    assert render_export_filename("shot.tif", conf, metadata=meta) == "R1_Frame012"

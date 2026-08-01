@@ -12,12 +12,32 @@ NegPy uses **Jinja2** for dynamic file naming in both the **Export** and **Scan*
 | :--- | :--- | :--- |
 | `{{ original_name }}` | Base filename of the source file (without extension). | `DSC0123` |
 | `{{ colorspace }}` | Target export color space. | `sRGB`, `Adobe RGB` |
-| `{{ format }}` | Export file format. | `JPEG`, `TIFF` |
+| `{{ format }}` | Export file format (JPEG, TIFF, …). | `JPEG`, `TIFF` |
 | `{{ paper_ratio }}` | Selected aspect ratio. | `3:2`, `Original` |
 | `{{ size }}` | Print size in cm (Empty if "Original Resolution" is used). | `30cm` |
 | `{{ dpi }}` | Export DPI (Empty if "Original Resolution" is used). | `300dpi` |
+| `{{ target_px }}` | Target long-edge size in pixels (Empty unless Pixels mode). | `2048px` |
 | `{{ border }}` | Inserts "border" if width > 0, else empty. | `border` |
 | `{{ date }}` | Current date in YYYYMMDD format. | `20260125` |
+| `{{ roll }}` | Scanlight capture roll name (Metadata → Roll), or parsed from a `{roll}_Frame{NNN}` stem. Not the Roll Analysis normalization name. | `Roll001` |
+| `{{ frame }}` | Capture frame number (integer), or parsed from the stem; unset (`none`) if unknown. Prefer `{{ frame\|pad(3) }}` or `{{ frame_padded }}` for zero-padding — `"%03d" % frame` only works when frame is set (otherwise the whole pattern falls back to `original_name`). | `12` |
+| `{{ frame_padded }}` | Zero-padded frame (`012`), or empty if unknown. Same as `{{ frame\|pad(3) }}`. | `012` |
+| `{{ camera }}` | Camera make + model. | `Mamiya 7` |
+| `{{ camera_make }}` / `{{ camera_model }}` | Camera make / model separately. | `Mamiya`, `7` |
+| `{{ lens }}` | Lens model (or make if model is empty). | `80mm f/4` |
+| `{{ lens_make }}` / `{{ lens_model }}` | Lens make / model separately. | |
+| `{{ focal_length }}` | Lens focal length in mm. | `80` |
+| `{{ film }}` | Film stock name. | `Portra 400` |
+| `{{ film_iso }}` | Film ISO. | `400` |
+| `{{ film_manufacturer }}` | Film manufacturer. | `Kodak` |
+| `{{ film_color_type }}` | Film color type. | `Color negative` |
+| `{{ film_format }}` | Film format (35mm, 120, …). Distinct from export `{{ format }}`. | `35mm` |
+| `{{ developer }}` | Developer. | `D-76 1+1` |
+| `{{ push_pull }}` | Push/pull as an integer (−3…+3, 0 = Normal). | `1` |
+| `{{ scanning }}` | Scanning method note. | `DSLR copy-stand` |
+| `{{ exposure }}` | Exposure override text from Metadata. | `1/125s f/2.8` |
+
+Gear and process values come from the **Metadata** panel (or each file’s saved metadata in a batch). Empty fields render as empty strings so surrounding separators collapse cleanly. Path-unsafe characters in metadata values are stripped.
 
 ### Examples
 
@@ -27,6 +47,8 @@ NegPy uses **Jinja2** for dynamic file naming in both the **Export** and **Scan*
 | `{{ date }}_{{ original_name }}_{{ colorspace }}` | `20260125_DSC0123_Adobe_RGB.jpg` |
 | `{{ original_name }}_{{ size }}_{{ dpi }}_{{ border }}` | `DSC0123_30cm_300dpi_border.jpg` |
 | `PRINT_{{ original_name }}_{{ paper_ratio }}` | `PRINT_DSC0123_3:2.jpg` |
+| `{{ roll }}_Frame{{ frame\|pad(3) }}_{{ film }}_{{ film_iso }}` | `Roll001_Frame012_Portra_400_400.jpg` |
+| `{{ film }}_{{ camera }}_{{ original_name }}` | `Portra_400_Mamiya_7_DSC0123.jpg` |
 
 ---
 

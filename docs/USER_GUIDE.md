@@ -481,11 +481,11 @@ The primary **Export** action. Its chevron menu picks the scope: current frame (
 *   **Input / Output ICC**: soft-proof against, and optionally embed, an ICC profile. Output is the destination profile (default); Input treats the profile as the source (when a scan's profile is known but untagged).
 *   **Paper Aspect Ratio**: final print ratio, or *Original* (no resize).
 *   **Resolution**: *Original* (full RAW resolution), *Print* (long-edge **Size** in cm + **DPI**), or *Pixels* (long-edge **px**; short side follows the paper ratio).
-*   **Destination**: **Filename Pattern** (a Jinja2 template, see [TEMPLATING.md](TEMPLATING.md)), **Overwrite** toggle, and output location (subfolder of source / same as source / an absolute **Export Path** with a browse button).
+*   **Destination**: **Filename Pattern** (a Jinja2 template with export settings plus Metadata fields such as roll, camera, film — see [TEMPLATING.md](TEMPLATING.md)), **Overwrite** toggle, and output location (subfolder of source / same as source / an absolute **Export Path** with a browse button).
 
 ### Collapsible sections
 
-*   **Presets**: a checklist of export presets (each a saved Format/Size/Colour recipe). **Manage** edits them; **Export Presets** renders the frame(s) with every enabled preset at once.
+*   **Presets**: a checklist of export presets (each a saved Format/Size/Colour/**Destination**/filename recipe). **Manage** edits them; **Export Presets** renders the frame(s) with every enabled preset at once — each preset uses **its own** destination, not the sidebar Destination above.
 *   **Sidecars**: **Save on export** writes a `.negpy` edit sidecar next to each source on every export; **Export sidecars** writes them for all visible frames now. (Edits always stay in the database too; sidecars are optional archival copies.)
 *   **Contact Sheet**: render all visible frames into a single sheet. Choose a **Template** or set **Cell / Gap / Margin / Max tiles** by hand, pick an output **Path**, and **Export contact sheet**.
 *   **Preview** (affects the on-screen preview only, never the file):
@@ -515,6 +515,7 @@ Archival metadata for the **original analog capture** (camera, lens, film, proce
 **Scanning:**
 
 *   **Scanning**: scan method/notes (EXIF `Software` is always `NegPy`).
+*   **Roll / Frame**: Scanlight capture roll name and frame number. Stamped automatically on capture; editable here. Available in export filename templates as `{{ roll }}` / `{{ frame }}`, and written to XMP as `negpy:CaptureRoll` / `negpy:CaptureFrame` when set (not the Roll Analysis normalization name).
 *   **Sync custom metadata to all files in batch export**: apply this tab's values to every file in a batch.
 
 **Exposure**: optional original shutter/aperture/ISO. Click the lock to edit a free-text string (e.g. `1/125s f/2.8 ISO 400`).

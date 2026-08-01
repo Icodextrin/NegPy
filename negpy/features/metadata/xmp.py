@@ -72,6 +72,10 @@ def build_xmp_xml(payload: MetadataPayload, *, standalone: bool = True) -> str:
         _sub(desc, "negpy", "Notes", payload.notes)
     if payload.scan_method:
         _sub(desc, "negpy", "ScanMethod", payload.scan_method)
+    if payload.capture_roll:
+        _sub(desc, "negpy", "CaptureRoll", payload.capture_roll)
+    if payload.capture_frame is not None:
+        _sub(desc, "negpy", "CaptureFrame", str(payload.capture_frame))
 
     # Digitization rig — always from source snapshot
     if payload.scan_camera_make:

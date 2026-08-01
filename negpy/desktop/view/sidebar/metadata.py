@@ -137,6 +137,29 @@ class MetadataSidebar(BaseSidebar):
         self.scanning_edit.setText(conf.scanning)
         scan.addWidget(self.scanning_edit)
 
+        roll_row = QHBoxLayout()
+        roll_row.setSpacing(THEME.space_sm)
+        roll_col = QVBoxLayout()
+        roll_col.setSpacing(THEME.space_md)
+        roll_col.addWidget(field_label("Roll"))
+        self.capture_roll_edit = QLineEdit()
+        self.capture_roll_edit.setPlaceholderText("e.g. Roll001")
+        self.capture_roll_edit.setText(conf.capture_roll)
+        self.capture_roll_edit.setToolTip("Scan capture roll name (Scanlight). Used in export filename templates as {{ roll }}.")
+        roll_col.addWidget(self.capture_roll_edit)
+        frame_col = QVBoxLayout()
+        frame_col.setSpacing(THEME.space_md)
+        frame_col.addWidget(field_label("Frame"))
+        self.capture_frame_edit = QLineEdit()
+        self.capture_frame_edit.setPlaceholderText("e.g. 12")
+        if conf.capture_frame is not None:
+            self.capture_frame_edit.setText(str(conf.capture_frame))
+        self.capture_frame_edit.setToolTip("Scan capture frame number. Used in export filename templates as {{ frame }}.")
+        frame_col.addWidget(self.capture_frame_edit)
+        roll_row.addLayout(roll_col, 2)
+        roll_row.addLayout(frame_col, 1)
+        scan.addLayout(roll_row)
+
         self.sync_check = QCheckBox("Sync custom metadata to all files in batch export")
         self.sync_check.setChecked(conf.sync_to_batch)
         scan.addWidget(self.sync_check)
@@ -255,6 +278,8 @@ class MetadataSidebar(BaseSidebar):
         self.developer_edit.textChanged.connect(self._mark_dirty)
         self.push_pull_combo.currentIndexChanged.connect(self._mark_dirty)
         self.scanning_edit.textChanged.connect(self._mark_dirty)
+        self.capture_roll_edit.textChanged.connect(self._mark_dirty)
+        self.capture_frame_edit.textChanged.connect(self._mark_dirty)
         self.sync_check.toggled.connect(self._mark_dirty)
         self.exposure_edit.textChanged.connect(self._mark_dirty)
 
@@ -415,6 +440,14 @@ class MetadataSidebar(BaseSidebar):
         if not self._exif_locked.get("exposure", True):
             exposure_override = self.exposure_edit.text().strip()
 
+        frame_text = self.capture_frame_edit.text().strip()
+        capture_frame = None
+        if frame_text:
+            try:
+                capture_frame = int(frame_text)
+            except ValueError:
+                capture_frame = self.state.config.metadata.capture_frame
+
         self.update_config_section(
             "metadata",
             persist=True,
@@ -429,6 +462,8 @@ class MetadataSidebar(BaseSidebar):
             developer=self.developer_edit.text().strip(),
             push_pull=PUSH_PULL_VALUES[pp_idx] if 0 <= pp_idx < len(PUSH_PULL_VALUES) else 0,
             scanning=self.scanning_edit.text().strip(),
+            capture_roll=self.capture_roll_edit.text().strip(),
+            capture_frame=capture_frame,
             sync_to_batch=self.sync_check.isChecked(),
             exposure_override=exposure_override,
         )
@@ -455,6 +490,8 @@ class MetadataSidebar(BaseSidebar):
             idx = PUSH_PULL_VALUES.index(conf.push_pull) if conf.push_pull in PUSH_PULL_VALUES else 3
             self.push_pull_combo.setCurrentIndex(idx)
             self.scanning_edit.setText(conf.scanning)
+            self.capture_roll_edit.setText(conf.capture_roll)
+            self.capture_frame_edit.setText("" if conf.capture_frame is None else str(conf.capture_frame))
             self.sync_check.setChecked(conf.sync_to_batch)
 
             if conf.exposure_override:

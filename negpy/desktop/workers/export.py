@@ -80,6 +80,7 @@ def resolve_export_naming(task: ExportTask) -> tuple[str, str, str]:
         task.export_settings,
         border_size=task.params.finish.border_size,
         half=int(task.file_info.get("half") or 0),
+        metadata=task.metadata_config,
     )
     return out_dir, filename, ext
 

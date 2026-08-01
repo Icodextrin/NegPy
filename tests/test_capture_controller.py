@@ -142,3 +142,35 @@ def test_capture_intent_is_scoped_to_captured_primary_path():
 def test_empty_paths_is_a_noop():
     c = _run([])
     c.request_asset_discovery.assert_not_called()  # nothing captured → no discovery
+
+
+def test_capture_stamps_roll_and_frame_on_import():
+    c = _run(
+        ["r.ARW", "g.ARW", "b.ARW"],
+        rgb_mode=True,
+        white_mode=False,
+        roll_name="Summer24",
+        frame_number=12,
+    )
+    pending = c._pending_capture_imports[os.path.normcase(os.path.abspath("r.ARW"))]
+    assert pending.capture_roll == "Summer24"
+    assert pending.capture_frame == 12
+
+    _hydrate_and_load(c, "r.ARW", ProcessMode.E6, autodetect=True)
+
+    assert c.state.config.metadata.capture_roll == "Summer24"
+    assert c.state.config.metadata.capture_frame == 12
+
+
+def test_normal_scan_stamps_roll_without_process_override():
+    c = _run(["frame.ARW"], rgb_mode=False, roll_name="Roll001", frame_number=3)
+    pending = c._pending_capture_imports[os.path.normcase(os.path.abspath("frame.ARW"))]
+    assert pending.process_mode is None
+    assert pending.capture_roll == "Roll001"
+    assert pending.capture_frame == 3
+
+    _hydrate_and_load(c, "frame.ARW", ProcessMode.C41, autodetect=True)
+
+    assert c.state.config.process.process_mode == ProcessMode.C41
+    assert c.state.config.metadata.capture_roll == "Roll001"
+    assert c.state.config.metadata.capture_frame == 3

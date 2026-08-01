@@ -45,6 +45,10 @@ class MetadataConfig:
     scanning: str = ""
     sync_to_batch: bool = False
 
+    # Scanlight capture identity (not process.roll_name / Roll Analysis)
+    capture_roll: str = ""
+    capture_frame: Optional[int] = None
+
     # When True, export copies source EXIF/XMP unchanged — NegPy writes no metadata.
     protect_original_metadata: bool = False
 

@@ -326,7 +326,11 @@ class ExportSettingsForm(QWidget):
             "Jinja2 template. Variables:\n"
             "{{ original_name }}, {{ colorspace }}, {{ format }},\n"
             "{{ paper_ratio }}, {{ size }}, {{ dpi }}, {{ target_px }},\n"
-            "{{ border }}, {{ date }}"
+            "{{ border }}, {{ date }},\n"
+            "{{ roll }}, {{ frame }}, {{ frame|pad(3) }}, {{ frame_padded }},\n"
+            "{{ camera }}, {{ lens }}, {{ film }}, {{ film_iso }}, {{ film_format }},\n"
+            "{{ developer }}, {{ push_pull }}, {{ scanning }}, {{ exposure }}\n"
+            "(see docs/TEMPLATING.md for the full list)"
         )
         self.filename_edit.textChanged.connect(self._on_changed)
         filename_row.addWidget(self.filename_edit)

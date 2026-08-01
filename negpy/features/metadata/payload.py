@@ -79,6 +79,8 @@ class MetadataPayload:
     film_format: str = ""
     film_color_type: str = ""
     capture_exposure: str = ""
+    capture_roll: str = ""
+    capture_frame: Optional[int] = None
 
     # Digitization rig (negpy:Scan* XMP only; source EXIF when capture gear not set)
     scan_camera_make: str = ""
@@ -157,6 +159,10 @@ class MetadataPayload:
             scan.append(("ISO", str(self.scan_iso)))
         if self.scan_method:
             scan.append(("Scan method", self.scan_method))
+        if self.capture_roll:
+            scan.append(("Roll", self.capture_roll))
+        if self.capture_frame is not None:
+            scan.append(("Frame", str(self.capture_frame)))
         if scan:
             sections.append(("Scan", scan))
 
@@ -283,6 +289,8 @@ def build_metadata_payload(
         film_format=film_format.strip(),
         film_color_type=film_color_type.strip(),
         capture_exposure=capture_exposure,
+        capture_roll=config.capture_roll.strip(),
+        capture_frame=config.capture_frame,
         scan_camera_make=scan.camera_make,
         scan_camera_model=scan.camera_model,
         scan_lens_make=scan.lens_make,
@@ -315,6 +323,8 @@ def build_metadata_payload(
         film_format=draft.film_format,
         film_color_type=draft.film_color_type,
         capture_exposure=draft.capture_exposure,
+        capture_roll=draft.capture_roll,
+        capture_frame=draft.capture_frame,
         scan_camera_make=draft.scan_camera_make,
         scan_camera_model=draft.scan_camera_model,
         scan_lens_make=draft.scan_lens_make,

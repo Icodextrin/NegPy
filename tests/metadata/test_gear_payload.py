@@ -432,6 +432,37 @@ def test_xmp_contains_negpy_capture_namespace():
     assert "negpy:Developer" in xml
 
     assert "tiff:Make" not in xml
+    assert "negpy:CaptureRoll" not in xml
+    assert "negpy:CaptureFrame" not in xml
+
+
+def test_xmp_includes_capture_roll_and_frame_when_set():
+    from negpy.features.metadata.payload import MetadataPayload
+
+    xml = build_xmp_xml(MetadataPayload(capture_roll="Summer24", capture_frame=12))
+    assert "negpy:CaptureRoll" in xml
+    assert ">Summer24<" in xml
+    assert "negpy:CaptureFrame" in xml
+    assert ">12<" in xml
+
+
+def test_xmp_omits_empty_capture_roll_and_unset_frame():
+    from negpy.features.metadata.payload import MetadataPayload
+
+    xml = build_xmp_xml(MetadataPayload(capture_roll="", capture_frame=None, film_stock="HP5"))
+    assert "negpy:CaptureRoll" not in xml
+    assert "negpy:CaptureFrame" not in xml
+    assert "negpy:CaptureFilmStock" in xml
+
+
+def test_build_metadata_payload_passes_capture_roll_frame():
+    config = MetadataConfig(capture_roll="Roll001", capture_frame=3)
+    payload = build_metadata_payload(config)
+    assert payload.capture_roll == "Roll001"
+    assert payload.capture_frame == 3
+    pairs = dict(payload.to_preview_pairs())
+    assert pairs["Roll"] == "Roll001"
+    assert pairs["Frame"] == "3"
 
 
 def test_scan_rig_preserved_in_xmp_while_exif_shows_analog():
