@@ -162,6 +162,11 @@ class AppState:
     # Transient: preview is currently peeking the flat render (not persisted).
     flat_peek: bool = False
 
+    # Linear Output: export the loader's raw decoded buffer as an untagged 16-bit TIFF.
+    linear_output: bool = False
+    # Linear Output expansion factor override. None = source-type default (4× Pakon, off DNG).
+    linear_expansion: float | None = None
+
     @property
     def local_hidden_masks(self) -> set:
         """The current file's hidden-mask indices (empty = all shown). Returns a fresh,
@@ -465,6 +470,10 @@ class DesktopSessionManager(QObject):
         if saved_flat_output is not None:
             self.state.flat_output = bool(saved_flat_output)
 
+        saved_linear_output = self.repo.get_global_setting("linear_output")
+        if saved_linear_output is not None:
+            self.state.linear_output = bool(saved_linear_output)
+
         self.state.export_presets = self.repo.load_export_presets()
 
     def set_gpu_enabled(self, enabled: bool) -> None:
@@ -518,8 +527,9 @@ class DesktopSessionManager(QObject):
         self.repo.save_export_presets(self.state.export_presets)
 
     def save_flat_output_prefs(self) -> None:
-        """Persists the flat ('for editing elsewhere') output preferences."""
+        """Persists the flat / linear output preferences."""
         self.repo.save_global_setting("flat_output", self.state.flat_output)
+        self.repo.save_global_setting("linear_output", self.state.linear_output)
 
     def _apply_sticky_settings(self, config: WorkspaceConfig, only_global: bool = False) -> WorkspaceConfig:
         """
