@@ -1,5 +1,24 @@
 # Change Log
 
+## 0.46.0
+
+- New: **Zone placement** — click a cell in the Analysis zone strip, click that spot on the photo, and Print Density (one pin) or Density and ISO-R Grade (two pins) solve so it prints there; pins drag live and Apply is one undo step.
+- New: **OpenICE IR removal** — a Method choice in the IR Removal panel: a port of [openICE](https://github.com/a6o/openICE), a reverse-engineering of Nikon Scan's Digital ICE, that rebuilds fine structure band by band where the existing chain averages it away, with its levels measured per frame instead of fixed to one scanner.
+- New: **Skin Protection** — a soft chroma ceiling on skin in the Lab panel, applied after the Chroma scale and independent of it, so skin that came off the print curve already sunburnt is reined in too. On by default at 0.5.
+- New: **Scanning setup wizard** — camera or scanner, white light or narrowband RGB; sets Linear RAW and Narrowband for the whole session. Opens after the first-launch tour, reachable from the bulb in the Process panel.
+- New: **Favourites panel** — a tab holding the sliders you reach for most, in your own order; each mirrors the real control and keeps its mode gating.
+- New: **Linear Output export** — a third export intent that skips the pipeline and writes the decoded source (Pakon, LinearRaw DNG, camera RAW) as an untagged linear 16-bit TIFF, WB recorded rather than applied. @thetalkingdrum
+- New: **Stitching accepts RGB-scan triplets** — each part decodes against its own green/blue exposures instead of the primary's. Also fixes RGB Scan / Half Frame dropping a composite's other parts.
+- Change: **Flat-field profiles are self-contained** — baked to their own file store, so moving or deleting the reference image no longer silently drops the correction; legacy profiles migrate on launch. @seanharding
+- Change: **Side panels narrow further** — button rows spill into overflow menus; minimum widths drop to 92px (controls) and 170px (session).
+- Change: **Film strip scrolling** — eased wheel scrolling, one row per notch, trackpads unchanged; right-clicking empty space opens Add files / Add folder / Clear all. @linkmodo
+- Change: **Reset in the Filtration panel is icon-only** — lining its tool row up with the Tone panel's.
+- Fix: **Healed hairs no longer leave a dark line** — and both repair paths paste the frame's own grain back in instead of a grainless average.
+- Fix: **Every RAW decodes on one shared scale** — LibRaw rescaled to the frame's own brightest pixel once the film base neared clipping, putting normalization bounds, flat-field, crosstalk and A/B on different scales. @thetalkingdrum
+- Fix: **IR dust removal on weak-IR scanners** — dip depth is scanner-dependent and the landmarks were Coolscan-calibrated, so a Plustek/SilverFast HDRi DNG had most of its dust missed; scanners at or above the reference render byte-identical.
+- Fix: **Arrow-key navigation lands on warm frames** — prefetch followed discovery order, not the filmstrip's sorted, filtered order. @seanharding
+- Fix: **Tethered shots are deleted off the body after download** — bodies without a capture target (X-T5) hold every object and refuse the 13th capture. @light-sntchr
+
 ## 0.45.0
 
 - New: **Test strip** — the Tone panel prints the frame as a 5×5 grid, Print Density increasing left to right and ISO-R Grade softening top to bottom, each ladder centred on its default so the settings you already have are one of the patches, so the diagonals read light-to-dark and soft-to-hard like a split-filter test strip. Each patch is a real render at its own settings; click one to keep it. Escape or a second press clears it, and any edit drops it. A patch only shows the slice of the frame at its own slot, so either proof can be turned: while one is up the 90° rotate buttons and [ / ] rotate the ladder instead of the image, moving the dense/hard end onto a different part of the frame with the axis labels following. Printing assembles all four orientations off the one set of renders, so turning the ladder is instant.
