@@ -193,6 +193,12 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         _row("Scanning", "metadata", "scanning"),
         _row("Exposure Override", "metadata", "exposure_override"),
         _row("Protect Original Metadata", "metadata", "protect_original_metadata"),
+        _row(
+            "Description Fields",
+            "metadata",
+            "description_fields",
+            fmt=lambda v: (", ".join(str(x) for x in v[0]) if v[0] else "—"),
+        ),
     )),
     ("Export", (
         _row("Format", "export", "export_fmt"),

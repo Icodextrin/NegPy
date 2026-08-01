@@ -557,6 +557,20 @@ class DesktopSessionManager(QObject):
                 metadata=replace(config.metadata, protect_original_metadata=bool(sticky_protect)),
             )
 
+        # Description fields: unset (None) inherits the sticky roll choice; an explicit
+        # per-frame tuple from Description… is left alone.
+        if config.metadata.description_fields is None:
+            from negpy.features.metadata.models import resolve_description_fields
+
+            sticky_desc = self.repo.get_global_setting("last_description_fields")
+            config = replace(
+                config,
+                metadata=replace(
+                    config.metadata,
+                    description_fields=resolve_description_fields(None, sticky_desc),
+                ),
+            )
+
         # Flat-field profile and distortion k1 are rig-global: the active profile's
         # values always override the per-file ones. New files default to enabled when a
         # profile is active; saved files keep their toggle.

@@ -225,6 +225,37 @@ class TestDesktopSessionSync(unittest.TestCase):
         config = self.session._apply_sticky_settings(base, only_global=True)
         self.assertTrue(config.metadata.protect_original_metadata)
 
+    def test_description_fields_sticky_applied_when_unset(self):
+        sticky = {
+            "last_export_config": {},
+            "last_description_fields": ["camera", "film", "developer", "scanning"],
+        }
+        self.mock_repo.get_global_setting.side_effect = lambda key, default=None: sticky.get(key, default)
+        base = WorkspaceConfig()  # description_fields is None
+        config = self.session._apply_sticky_settings(base, only_global=True)
+        self.assertEqual(config.metadata.description_fields, ("camera", "film", "developer", "scanning"))
+
+    def test_description_fields_per_frame_not_overwritten_by_sticky(self):
+        sticky = {
+            "last_export_config": {},
+            "last_description_fields": ["camera", "film", "developer", "scanning"],
+        }
+        self.mock_repo.get_global_setting.side_effect = lambda key, default=None: sticky.get(key, default)
+        base = WorkspaceConfig(
+            metadata=replace(WorkspaceConfig().metadata, description_fields=("camera", "iso")),
+        )
+        config = self.session._apply_sticky_settings(base, only_global=True)
+        self.assertEqual(config.metadata.description_fields, ("camera", "iso"))
+
+    def test_persist_sticky_settings_does_not_write_description_fields(self):
+        """Any metadata save must not clobber last Description… confirm."""
+        config = WorkspaceConfig(
+            metadata=replace(WorkspaceConfig().metadata, description_fields=("camera", "developer")),
+        )
+        self.session._persist_sticky_settings(config)
+        saved = self.mock_repo.save_global_settings.call_args.args[0]
+        self.assertNotIn("last_description_fields", saved)
+
     def test_processing_toggles_carry_to_new_files(self):
         # Globally remembered toggles must be applied to a fresh (sidecar-less) file.
         sticky = {

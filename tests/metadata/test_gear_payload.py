@@ -383,9 +383,55 @@ def test_build_image_description():
         lens_model="50mm f/1.4",
         film_stock="Portra 400",
         iso=400,
+        film_format="35mm",
+        developer="D-76 1+1",
+        push_pull="Push +1",
+        scan_method="DSLR copy-stand",
     )
 
     assert build_image_description(payload) == "Canon AE-1 • 50mm f/1.4 • Portra 400 • ISO 400"
+    assert (
+        build_image_description(
+            payload,
+            ("camera", "lens", "film", "iso", "format", "developer", "push_pull", "scanning"),
+        )
+        == "Canon AE-1 • 50mm f/1.4 • Portra 400 • ISO 400 • 35mm • D-76 1+1 • Push +1 • DSLR copy-stand"
+    )
+
+
+def test_build_image_description_omits_normal_push_pull():
+    from negpy.features.metadata.payload import MetadataPayload
+
+    payload = MetadataPayload(developer="D-76", push_pull="Normal", film_format="35mm")
+    assert build_image_description(payload, ("format", "developer", "push_pull")) == "35mm • D-76"
+
+
+def test_build_image_description_process_only():
+    from negpy.features.metadata.payload import MetadataPayload
+
+    payload = MetadataPayload(film_format="120", developer="HC-110", scan_method="flatbed")
+    assert build_image_description(payload, ("format", "developer", "scanning")) == "120 • HC-110 • flatbed"
+
+
+def test_build_metadata_payload_respects_description_fields():
+    config = MetadataConfig(
+        camera_make="Nikon",
+        camera_model="FM2",
+        film="Tri-X",
+        film_iso=400,
+        developer="D-76",
+        description_fields=("camera", "film", "developer"),
+    )
+    payload = build_metadata_payload(config)
+    assert payload.image_description == "Nikon FM2 • Tri-X • D-76"
+
+
+def test_normalize_description_fields_orders_and_filters():
+    from negpy.features.metadata.models import normalize_description_fields
+
+    assert normalize_description_fields(["iso", "camera", "nope"]) == ("camera", "iso")
+    assert MetadataConfig(description_fields=["scanning", "film"]).description_fields == ("film", "scanning")
+    assert MetadataConfig().description_fields is None
 
 
 def test_build_metadata_payload_preview_pairs():

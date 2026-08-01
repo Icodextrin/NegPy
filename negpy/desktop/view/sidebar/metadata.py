@@ -17,10 +17,12 @@ from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import field_label, hint_label
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.collapsible import CollapsibleSection
+from negpy.desktop.view.widgets.description_fields_dialog import DescriptionFieldsDialog
 from negpy.desktop.view.widgets.gear_library_dialog import GearLibraryDialog
 from negpy.desktop.view.widgets.searchable_gear_combo import SearchableGearCombo
 from negpy.features.metadata.gear_logic import metadata_from_gear
 from negpy.features.metadata.gear_models import GearLibrary
+from negpy.features.metadata.models import DEFAULT_DESCRIPTION_FIELDS
 from negpy.features.metadata.payload import build_metadata_payload
 from negpy.services.assets.gear import GearProfiles
 
@@ -50,6 +52,7 @@ class MetadataSidebar(BaseSidebar):
 
         self._dirty = False
         self._exif_locked = {"exposure": True}
+        self._description_fields: tuple[str, ...] = conf.description_fields or DEFAULT_DESCRIPTION_FIELDS
 
         self.protect_check = QCheckBox("Protect original metadata")
         self.protect_check.setChecked(conf.protect_original_metadata)
@@ -184,8 +187,15 @@ class MetadataSidebar(BaseSidebar):
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(4)
 
+        preview_top = QHBoxLayout()
+        preview_top.setContentsMargins(0, 0, 0, 0)
+        preview_top.setSpacing(THEME.space_sm)
         preview_hint = hint_label("Written to exported files on export.")
-        preview_layout.addWidget(preview_hint)
+        preview_top.addWidget(preview_hint, 1)
+        self.description_fields_btn = QPushButton("Description…")
+        self.description_fields_btn.setToolTip("Choose which fields join into EXIF ImageDescription.")
+        preview_top.addWidget(self.description_fields_btn)
+        preview_layout.addLayout(preview_top)
 
         self.preview_rows = QVBoxLayout()
         self.preview_rows.setSpacing(2)
@@ -239,6 +249,7 @@ class MetadataSidebar(BaseSidebar):
 
     def _set_metadata_controls_enabled(self, enabled: bool) -> None:
         self._metadata_controls.setEnabled(enabled)
+        self.description_fields_btn.setEnabled(enabled)
 
     def _apply_lock_style(self, edit: QLineEdit, locked: bool) -> None:
         if locked:
@@ -266,6 +277,7 @@ class MetadataSidebar(BaseSidebar):
 
     def _connect_signals(self) -> None:
         self.protect_check.toggled.connect(self._on_protect_toggled)
+        self.description_fields_btn.clicked.connect(self._open_description_fields)
         self.preset_combo.selection_changed.connect(self._on_preset_changed)
         self.preset_clear_btn.clicked.connect(self._on_preset_clear)
         self.camera_combo.selection_changed.connect(self._on_gear_changed)
@@ -293,6 +305,26 @@ class MetadataSidebar(BaseSidebar):
             render=False,
             readback_metrics=False,
             protect_original_metadata=checked,
+        )
+        self._schedule_preview()
+
+    def _open_description_fields(self) -> None:
+        dlg = DescriptionFieldsDialog(self._description_fields, self)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        self._description_fields = dlg.selected_fields()
+        self.update_config_section(
+            "metadata",
+            persist=True,
+            render=False,
+            readback_metrics=False,
+            description_fields=self._description_fields,
+        )
+        # Sticky is only updated here — not on every metadata save — so the last
+        # Description… confirm wins for unset frames on the roll.
+        self.controller.session.repo.save_global_setting(
+            "last_description_fields",
+            list(self._description_fields),
         )
         self._schedule_preview()
 
@@ -493,6 +525,7 @@ class MetadataSidebar(BaseSidebar):
             self.capture_roll_edit.setText(conf.capture_roll)
             self.capture_frame_edit.setText("" if conf.capture_frame is None else str(conf.capture_frame))
             self.sync_check.setChecked(conf.sync_to_batch)
+            self._description_fields = conf.description_fields or DEFAULT_DESCRIPTION_FIELDS
 
             if conf.exposure_override:
                 self._set_exif_text_quiet("exposure", conf.exposure_override)
@@ -535,6 +568,33 @@ class MetadataSidebar(BaseSidebar):
         else:
             self._set_exif_text_quiet("exposure", "")
 
+    def _preview_metadata_config(self):
+        """MetadataConfig from the live form so preview tracks edits before debounce persist."""
+        conf = self.state.config.metadata
+        fmt = self.format_combo.currentText()
+        pp_idx = self.push_pull_combo.currentIndex()
+        exposure_override = ""
+        if not self._exif_locked.get("exposure", True):
+            exposure_override = self.exposure_edit.text().strip()
+        else:
+            exposure_override = conf.exposure_override
+
+        return replace(
+            conf,
+            gear_preset_id=self.preset_combo.selected_id(),
+            camera_id=self.camera_combo.selected_id(),
+            lens_id=self.lens_combo.selected_id(),
+            film_stock_id=self.film_stock_combo.selected_id(),
+            format=fmt,
+            format_other=self.format_other_edit.text().strip() if fmt == "Other" else "",
+            developer=self.developer_edit.text().strip(),
+            push_pull=PUSH_PULL_VALUES[pp_idx] if 0 <= pp_idx < len(PUSH_PULL_VALUES) else 0,
+            scanning=self.scanning_edit.text().strip(),
+            sync_to_batch=self.sync_check.isChecked(),
+            exposure_override=exposure_override,
+            description_fields=self._description_fields,
+        )
+
     def _update_preview(self) -> None:
         while self.preview_rows.count():
             item = self.preview_rows.takeAt(0)
@@ -553,7 +613,7 @@ class MetadataSidebar(BaseSidebar):
         if current_hash and current_hash in self.state.source_exif:
             source_exif = self.state.source_exif[current_hash]
 
-        payload = build_metadata_payload(conf, self._gear_library, source_exif)
+        payload = build_metadata_payload(self._preview_metadata_config(), self._gear_library, source_exif)
         sections = payload.to_preview_sections()
 
         self.preview_empty.setText("Select gear or enter process metadata to see a preview.")

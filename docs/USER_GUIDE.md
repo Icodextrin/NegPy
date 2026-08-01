@@ -520,7 +520,7 @@ Archival metadata for the **original analog capture** (camera, lens, film, proce
 
 **Exposure**: optional original shutter/aperture/ISO. Click the lock to edit a free-text string (e.g. `1/125s f/2.8 ISO 400`).
 
-**Metadata preview**: a live view of exactly what will be embedded, grouped by capture / scan / process / file.
+**Metadata preview**: a live view of exactly what will be embedded, grouped by capture / scan / process / file. **Description…** opens a checklist of which fields join into EXIF `ImageDescription`. Defaults are camera, lens, film stock, and ISO — format, developer, push/pull, and scanning are off until you enable them. Confirming **Description…** sets that frame's selection and becomes the sticky default for other frames that don't have their own; the last confirm on the roll wins. Sync metadata / Sync settings can also copy a frame's selection with the rest of the metadata.
 
 When you set capture gear, it's written to standard EXIF and the digitizing rig is preserved separately in `negpy:Scan*` XMP tags. Leave gear unset and your scanner/DSLR stays visible in EXIF instead.
 
