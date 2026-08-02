@@ -189,17 +189,19 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(0, self._maybe_restore_session)
 
     def _maybe_restore_session(self) -> None:
-        """Offers to reopen the previous session's files on first show."""
+        """Offers to reopen the previous session's files on first show, and otherwise
+        opens the library — with nothing loaded, a list of rolls beats a blank panel."""
         paths = self.controller.saved_session_paths()
-        if not paths:
-            return
-        reply = QMessageBox.question(
-            self,
-            "Restore Session",
-            f"Reopen your last session ({len(paths)} file(s))?",
-        )
-        if reply == QMessageBox.StandardButton.Yes:
-            self.controller.restore_session()
+        if paths:
+            reply = QMessageBox.question(
+                self,
+                "Restore Session",
+                f"Reopen your last session ({len(paths)} file(s))?",
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.controller.restore_session()
+                return
+        self.session_panel.show_library(ask_if_unset=False)
 
     def _refresh_monitor_profile(self, force: bool = False) -> None:
         """Detect the active screen's ICC profile and hand it to the controller, which
@@ -593,6 +595,10 @@ class MainWindow(QMainWindow):
 
     def dropEvent(self, event) -> None:
         paths = [u.toLocalFile() for u in event.mimeData().urls()]
-        if paths:
+        if len(paths) == 1 and os.path.isdir(paths[0]):
+            # Same courtesy as Add folder: a dropped folder that only holds subfolders
+            # shows them rather than reporting that it found nothing.
+            self.session_panel.file_browser.open_or_browse(paths[0])
+        elif paths:
             self.controller.request_asset_discovery(paths, auto_open=True)
         event.acceptProposedAction()

@@ -41,13 +41,40 @@ Both side panels can be narrowed to give the canvas more room. As the controls p
 
 ## 2. Film strip (left panel)
 
-The header shows the NegPy logo and version (and an update link when a new release is out). Below it is the file browser.
+The header shows the NegPy logo and version (and an update link when a new release is out). Below it: the toolbar, the search box, and then two collapsible sections — **Library** (the folders your scans live in) and **Film Strip** (the frames you have open). Click either heading to fold it away; the one still open takes the whole panel, and a folded one keeps just its heading. NegPy remembers which were open.
+
+### Your library
+
+The **Library** section is a folder tree of the places your scans live. Press **+** to add a folder — point it at the one big `Scans` directory you keep everything under, subfolders and all. **↻** re-reads it from disk. Each row shows what is inside it ("36 photos", "2 folders"), and subfolders are read when you expand them.
+
+**Browsing costs nothing.** Nothing is opened, decoded or hashed when you add a folder or click through the tree — NegPy just lists what is there.
+
+#### The Library button
+
+The **Library** button (book icon, first in the toolbar, or **Ctrl+L**) opens the folder your scans live in. The first time you press it, NegPy asks you to pick that folder and remembers it. It is also where the panel goes on its own: on launch when you don't restore a session, and whenever you unload the last frame — your rolls are a more useful resting state than an empty sheet.
+
+To point it somewhere else, add another folder with **+**; to forget them all, use **Clear Library** in *Manage Database* (that clears the list of folders only — your images, folders and edits are untouched).
+
+#### Walking around
+
+*   **Click** a folder to select it, **double-click** (or **Enter**) to open it.
+*   **Ctrl+click** several folders and open them together to load more than one roll at once — you are asked once, for the total.
+*   **Alt+Up** moves the selection to the folder above.
+*   The tree sorts the way the sheet does: change **Sort** to Date or Descending and the folders follow.
+
+When you open a folder that actually contains images, NegPy asks whether to **load the roll** — and only then does it hash and thumbnail them, which is the part that takes a moment on a big roll. Say no and nothing happens; your open frames stay exactly as they were. Tick **Always load without asking** in that prompt if you would rather it just get on with it.
+
+Loading a roll replaces what's in the film strip (right-click → **Add to session** appends instead). Nothing is lost either way: your edits live in NegPy's database, not in the list of open files.
+
+#### Folders are your folders
+
+NegPy reads the tree straight from disk and never creates, renames, moves or deletes anything in it — reorganize in Finder or Explorer and the tree simply shows the new arrangement next time you refresh. Because every edit is stored against the image's content, moving a file between folders keeps its edit, its history and its keep/reject mark.
 
 ### Importing & managing files
 
 Toolbar buttons, left to right:
 
-*   **Add files** / **Add folder**: load individual images or every image in a folder.
+*   **Add files** / **Add folder**: load individual images or every image in a folder. Pick a folder that only holds *other* folders and NegPy reveals it in the Library section instead of reporting that it found nothing. Dropping a folder on the window does the same.
 *   **Clear all**: unload everything (or, when several frames are selected, unload just those).
 *   **Hot Folder**: watches the current folder and auto-loads new files as they appear, handy when a scanner drops files into a directory.
 *   **RGB Scan**: treats the folder as red/green/blue exposure triplets and assembles each frame from three shots (for narrowband trichrome scanning). Right-click a frame → **Edit RGB Triplet…** to assign the three files by hand.
@@ -56,7 +83,30 @@ Toolbar buttons, left to right:
 *   **Sheet filter** (funnel): show *All frames*, *Keepers only*, or *Hide rejected*.
 *   **Sort**: by Name or Date, ascending or descending.
 
-Below the toolbar: a **filter box** (substring match; toggle **`.*`** for regex) and a **tally**, e.g. "36 frames · 12 keepers · 3 rejected".
+Above both sections: a **filter box**, a **`.*`** regex toggle and a **search-library** button. Inside the Film Strip section, a **tally**, e.g. "36 frames · 12 keepers · 3 rejected".
+
+#### Filtering the sheet
+
+Type a plain word and it matches the filename, as before. Beyond that the box takes `field:value` terms, which is how you find a frame by what it *is* rather than what it was called:
+
+| Term | Finds |
+|---|---|
+| `film:portra` | frames whose film stock contains "portra" |
+| `camera:"Nikon F3"` | quote anything with a space |
+| `iso:>=400` | numeric fields also take `>`, `>=`, `<`, `<=` (`iso`, `frame`, `push`) |
+| `date:2024-03` · `date:>=2024` | by file date; a partial date is a prefix |
+| `roll:` `developer:` `lens:` `format:` `scanning:` | the rest of the Metadata panel |
+| `name:` `path:` `ext:tif` | file identity |
+| `keeper:` `rejected:` `edited:` | frames carrying that mark, or with a saved edit |
+| `-rejected:` `-film:velvia` | a leading `-` negates any term |
+
+Terms combine with AND, so `film:portra iso:>=400 -rejected:` is all three conditions at once. Metadata comes from each frame's own **Metadata** panel, so it is searchable once you've filled it in — a frame you have never edited is findable by name, extension, date and mark. The **`.*`** toggle switches the box back to a plain regex over filenames, which ignores the field syntax.
+
+#### Searching the whole library
+
+The filter box narrows what is already open. The **magnifier-over-folder** button beside it (or **Enter** in the box) runs the same search across every library folder instead, and loads what it finds — so `film:portra` finds your Portra frames in folders you haven't opened this month. The status bar counts files as it goes.
+
+This works without opening anything because NegPy already knows which edit belongs to which file. A frame you have never edited is still findable by name, extension or date; film stock, camera and the rest come from frames you have filled in. The folders are only read, never indexed in the background and never modified.
 
 Right-clicking **empty space** in the film strip offers **Add files**, **Add folder** and **Clear all**, so those tools stay in reach part-way down a long roll instead of only at the top of the panel. Here **Clear all** always means the whole session, never just the selection.
 

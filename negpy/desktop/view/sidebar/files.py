@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListView,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSlider,
     QStyle,
@@ -45,6 +46,19 @@ from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.granular_settings_dialog import GranularSettingsDialog, open_paste_dialog
 from negpy.infrastructure.filesystem.watcher import FolderWatchService
 from negpy.infrastructure.loaders.helpers import get_supported_raw_wildcards
+from negpy.desktop.view.sidebar.library_tree import LibraryTree
+from negpy.desktop.view.widgets.collapsible import CollapsibleSection
+from negpy.services.assets.library import folder_counts
+
+
+_UNBOUNDED_HEIGHT = 16777215  # QWIDGETSIZE_MAX — Qt's "no maximum"
+# With both sections open the panel splits 40/60: the tree is for finding a roll, the
+# sheet is where the work happens, so the frames get the larger half.
+_LIBRARY_SHARE, _FRAMES_SHARE = 2, 3
+
+
+def _folder_label(path: str) -> str:
+    return os.path.basename(path.rstrip(os.sep)) or path
 
 
 class _ThumbnailDelegate(QStyledItemDelegate):
@@ -290,6 +304,9 @@ class FileBrowser(QWidget):
     """
 
     file_selected = pyqtSignal(str)
+    library_requested = pyqtSignal(bool)  # reveal the library (arg: ask for a folder if unset)
+    browse_requested = pyqtSignal(str)  # reveal this folder in the tree
+    sort_changed = pyqtSignal()  # the folder tree follows the sheet's sort
 
     def __init__(self, controller: AppController):
         super().__init__()
@@ -330,6 +347,10 @@ class FileBrowser(QWidget):
         btn_height = 28
 
         toolbar_row = OverflowBar(height=btn_height, spacing=4)
+
+        self.library_btn = QToolButton()
+        self.library_btn.setIcon(qta.icon("fa5s.book-open", color=THEME.text_primary))
+        self.library_btn.setToolTip("Library — browse the folder your scans live in")
 
         self.add_files_btn = QToolButton()
         self.add_files_btn.setIcon(qta.icon("fa5s.file-import", color=THEME.text_primary))
@@ -413,6 +434,7 @@ class FileBrowser(QWidget):
         self.sort_btn.setMenu(sort_menu)
 
         for btn in (
+            self.library_btn,
             self.add_files_btn,
             self.add_folder_btn,
             self.unload_btn,
@@ -430,6 +452,7 @@ class FileBrowser(QWidget):
         # OverflowBar rather than a QHBoxLayout: a plain row made the whole session panel
         # unshrinkable below every button laid end to end, so each new tool widened it for good.
         for widget, label in (
+            (self.library_btn, "Library"),
             (self.add_files_btn, "Add files"),
             (self.add_folder_btn, "Add folder"),
             (self.unload_btn, "Clear all"),
@@ -455,7 +478,13 @@ class FileBrowser(QWidget):
 
         search_row = QHBoxLayout()
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Filter by filename...")
+        self.search_input.setPlaceholderText("Filter — name, film:portra, iso:>=400…")
+        self.search_input.setToolTip(
+            "Filter the sheet. A bare word matches the filename; terms are combined with AND.\n"
+            "Fields: film, camera, lens, developer, format, scanning, roll, frame, iso, push,\n"
+            "name, path, ext, date, keeper, rejected, edited.\n"
+            'Examples:  film:portra iso:>=400   ·   camera:"Nikon F3" -rejected:   ·   date:>=2024-03'
+        )
         self.search_input.setClearButtonEnabled(True)
         self.search_input.addAction(
             qta.icon("fa5s.search", color=THEME.text_secondary),
@@ -468,8 +497,18 @@ class FileBrowser(QWidget):
         self.regex_btn.setCheckable(True)
         self.regex_btn.setFixedWidth(36)
         self.regex_btn.setToolTip("Regex mode")
+
+        # Same query text, wider net: the box above filters what is loaded, this runs
+        # it against every library folder and opens what it finds.
+        self.library_search_btn = QToolButton()
+        self.library_search_btn.setIcon(qta.icon("mdi.folder-search-outline", color=THEME.text_primary))
+        self.library_search_btn.setFixedSize(28, 28)
+        self.library_search_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.library_search_btn.setToolTip("Search the whole library — runs this search across your library folders and loads the matches")
+
         search_row.addWidget(self.search_input)
         search_row.addWidget(self.regex_btn)
+        search_row.addWidget(self.library_search_btn)
 
         # Thumbnail size lives here rather than the toolbar row above, to keep that row's
         # overflow menu to file actions.
@@ -480,12 +519,13 @@ class FileBrowser(QWidget):
         self.thumb_size_slider.setFixedWidth(72)
         self.thumb_size_slider.setToolTip("Thumbnail size — smaller fits more columns in the panel")
         search_row.addWidget(self.thumb_size_slider)
+        # Above both sections: one box that filters the frames and searches the library,
+        # so it belongs to neither and stays reachable when either is folded away.
         layout.addLayout(search_row)
 
         self.tally_label = QLabel("")
         self.tally_label.setStyleSheet(f"color: {THEME.text_secondary}; font-size: 10px;")
         self.tally_label.setVisible(False)
-        layout.addWidget(self.tally_label)
 
         self.list_view = ThumbnailGridView(target_cell=self.thumb_size_slider.value())
         self.list_view.setModel(self.session.asset_model)
@@ -496,13 +536,50 @@ class FileBrowser(QWidget):
         self.list_view.setAlternatingRowColors(False)
         self.list_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
 
-        layout.addWidget(self.list_view)
+        self.library_tree = LibraryTree(self.controller)
+        self.library_section = self._make_section("Library", "fa5s.folder-open", self.library_tree, "library_section_expanded")
+
+        frames = QWidget()
+        frames_layout = QVBoxLayout(frames)
+        frames_layout.setContentsMargins(0, 0, 0, 0)
+        frames_layout.setSpacing(4)
+        frames_layout.addWidget(self.tally_label)
+        frames_layout.addWidget(self.list_view, 1)
+        self.frames_section = self._make_section("Film Strip", "fa5s.film", frames, "frames_section_expanded")
+
+        layout.addWidget(self.library_section)
+        layout.addWidget(self.frames_section)
+        self._rebalance_sections()
 
         # Applied after list_view exists — the filter prunes selection against the view.
         saved_sheet = self.session.repo.get_global_setting("sheet_filter") or "all"
         self._apply_sheet_filter(str(saved_sheet), save=False)
 
+    def _make_section(self, title: str, icon: str, content: QWidget, setting: str) -> CollapsibleSection:
+        saved = self.session.repo.get_global_setting(setting)
+        section = CollapsibleSection(title, expanded=True if saved is None else bool(saved), icon=qta.icon(icon, color=THEME.text_muted))
+        section.set_content(content)
+        section.expanded_changed.connect(lambda on, key=setting: self._on_section_toggled(key, on))
+        return section
+
+    def _on_section_toggled(self, setting: str, expanded: bool) -> None:
+        self.session.repo.save_global_setting(setting, expanded)
+        self._rebalance_sections()
+
+    def _rebalance_sections(self) -> None:
+        """Expanded sections share the panel; a collapsed one keeps only its header.
+
+        Stretch alone is not enough — a collapsed section would still be handed leftover
+        space — so its height is pinned to the header until it opens again.
+        """
+        layout = self.layout()
+        for section, share in ((self.library_section, _LIBRARY_SHARE), (self.frames_section, _FRAMES_SHARE)):
+            expanded = section.toggle_button.isChecked()
+            layout.setStretchFactor(section, share if expanded else 0)
+            section.setMaximumHeight(_UNBOUNDED_HEIGHT if expanded else section.toggle_button.height())
+
     def _connect_signals(self) -> None:
+        self.library_btn.clicked.connect(lambda: self.library_requested.emit(True))
         self.add_files_btn.clicked.connect(self._on_add_files)
         self.add_folder_btn.clicked.connect(self._on_add_folder)
         self.unload_btn.clicked.connect(self._on_unload_clicked)
@@ -515,8 +592,13 @@ class FileBrowser(QWidget):
         self.half_frame_btn.toggled.connect(self._on_half_frame_toggled)
         self.session.state_changed.connect(self.sync_ui)
         self.session.files_changed.connect(self._on_files_changed)
+        # Unloading the last frame leaves nothing to show — fall back to the library
+        # rather than an empty panel. Never prompts: the user asked to unload, not to load.
+        self.session.session_emptied.connect(lambda: self.library_requested.emit(False))
         self.search_input.textChanged.connect(lambda _: self.filter_timer.start())
+        self.search_input.returnPressed.connect(self.search_library)
         self.regex_btn.toggled.connect(lambda _: self.filter_timer.start())
+        self.library_search_btn.clicked.connect(self.search_library)
         # Relayout live while dragging, but only write the setting on release —
         # a drag crosses dozens of values and each save is a DB round-trip.
         self.thumb_size_slider.valueChanged.connect(self.list_view.set_target_cell)
@@ -527,6 +609,68 @@ class FileBrowser(QWidget):
         del_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Delete), self.list_view)
         del_shortcut.setContext(Qt.ShortcutContext.WidgetShortcut)
         del_shortcut.activated.connect(self._on_delete_key)
+
+    def load_folder(self, path: str, add_to_session: bool = False) -> None:
+        """Load one folder's images, asking first.
+
+        Listing a folder is free and belongs to the library tree; this is the expensive
+        half, and an accepted prompt is the only thing that starts the hashing pass.
+        """
+        images, _ = folder_counts(path)
+        if not images:
+            self.controller.set_status(f"No images directly in “{_folder_label(path)}”", 4000)
+            return
+        if not self._confirm_load(images, _folder_label(path)):
+            return
+        self.controller.open_library_folder(path, add_to_session=add_to_session)
+
+    def load_folders(self, paths, add_to_session: bool = False) -> None:
+        """Load one folder, or a whole selection of them at once."""
+        paths = [p for p in paths if p]
+        if len(paths) == 1:
+            self.load_folder(paths[0], add_to_session=add_to_session)
+            return
+        if not paths:
+            return
+
+        counted = [(p, folder_counts(p)[0]) for p in paths]
+        loadable = [p for p, n in counted if n]
+        total = sum(n for _, n in counted)
+        if not loadable:
+            self.controller.set_status("Those folders have no images in them", 4000)
+            return
+        if not self._confirm_load(total, f"{len(loadable)} folders"):
+            return
+        self.controller.open_library_folders(loadable, add_to_session=add_to_session)
+
+    def _confirm_load(self, image_count: int, label: str) -> bool:
+        if self.session.repo.get_global_setting("library_autoload_folders", False):
+            return True
+
+        n = image_count
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Load roll")
+        box.setText(f"Load {n} image{'s' if n != 1 else ''} from “{label}”?")
+        box.setInformativeText("They are hashed and thumbnailed on load, which takes a moment on a large roll.")
+        remember = QCheckBox("Always load without asking")
+        box.setCheckBox(remember)
+        load = box.addButton("Load", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not load:
+            return False
+        if remember.isChecked():
+            self.session.repo.save_global_setting("library_autoload_folders", True)
+        return True
+
+    def search_library(self) -> None:
+        """Run the box's query against the library folders instead of the loaded roll."""
+        self.controller.request_library_search(self.search_input.text())
+
+    def focus_search(self) -> None:
+        self.search_input.setFocus()
+        self.search_input.selectAll()
 
     def _save_thumb_size(self) -> None:
         self.session.repo.save_global_setting("thumbnail_cell_size", self.thumb_size_slider.value())
@@ -648,6 +792,7 @@ class FileBrowser(QWidget):
         self.act_sort_name.setChecked(order == "name")
         self.act_sort_date.setChecked(order == "date")
         self.session.asset_model.set_sort_order(order)
+        self.sort_changed.emit()
         if save:
             self.session.repo.save_global_setting("file_sort_order", order)
 
@@ -655,8 +800,12 @@ class FileBrowser(QWidget):
         self.act_sort_asc.setChecked(not descending)
         self.act_sort_desc.setChecked(descending)
         self.session.asset_model.set_sort_descending(descending)
+        self.sort_changed.emit()
         if save:
             self.session.repo.save_global_setting("file_sort_descending", descending)
+
+    def sort_choice(self) -> tuple[str, bool]:
+        return ("date" if self.act_sort_date.isChecked() else "name", self.act_sort_desc.isChecked())
 
     def _apply_sheet_filter(self, mode: str, save: bool = True) -> None:
         self.act_sheet_all.setChecked(mode == "all")
@@ -743,7 +892,24 @@ class FileBrowser(QWidget):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder", start_dir)
         if folder:
             self.session.repo.save_global_setting("last_open_folder", os.path.dirname(folder))
+            self.open_or_browse(folder)
+
+    def open_or_browse(self, folder: str) -> None:
+        """Load a folder's images, or — when it only holds subfolders — reveal it in the
+        library tree so its subfolders are one click away.
+
+        Picking the one directory everything lives under used to dead-end on "no
+        supported assets found", because the importer looks in that folder and not
+        through it.
+        """
+        images, subfolders = folder_counts(folder)
+        if images:
             self.controller.request_asset_discovery([folder], auto_open=True)
+        elif subfolders:
+            self.browse_requested.emit(folder)
+            self.controller.set_status(f"No images directly in that folder — showing its {subfolders} subfolders", 5000)
+        else:
+            self.controller.set_status("That folder has no images in it", 4000)
 
     def _activate_file(self, index) -> None:
         """Load a thumbnail into the main viewer, skipping a redundant reload of the
