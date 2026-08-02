@@ -297,6 +297,9 @@ class RenderWorker(QObject):
                 )
                 if isinstance(result, GPUTexture):
                     result = result.readback()
+                # GPU readback is rgba32float; ImageConverter.to_qimage assumes RGB888 (w*3).
+                if isinstance(result, np.ndarray) and result.ndim == 3 and result.shape[2] >= 4:
+                    result = np.ascontiguousarray(result[:, :, :3])
                 tiles.append(result)
                 if content_rect is None:
                     content_rect = metrics.get("content_rect")

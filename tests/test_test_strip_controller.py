@@ -93,6 +93,44 @@ class TestStripWorker(unittest.TestCase):
 
         self.assertEqual(leaked, [])
 
+    def test_gpu_rgba_readback_is_stripped_to_rgb(self):
+        """GPUTexture.readback is HxWx4; mosaics must be HxWx3 for RGB888 display."""
+        with patch("negpy.desktop.workers.render.ImageProcessor") as MockIP:
+            from negpy.desktop.workers.render import RenderWorker, TestStripTask
+            from negpy.infrastructure.gpu.resources import GPUTexture
+
+            rgba = np.zeros((8, 8, 4), np.float32)
+            rgba[:, :, :3] = 0.5
+            rgba[:, :, 3] = 1.0
+            tex = object.__new__(GPUTexture)
+            tex.readback = lambda: rgba  # type: ignore[method-assign]
+
+            MockIP.return_value.run_pipeline.side_effect = lambda *a, **k: (
+                tex,
+                {"content_rect": (0, 0, 8, 8)},
+            )
+            worker = RenderWorker()
+            done: list = []
+            worker.strip_finished.connect(lambda m, r: done.append((m, r)))
+
+            worker.build_strip(
+                TestStripTask(
+                    buffer=np.zeros((8, 8, 3), np.float32),
+                    config=WorkspaceConfig(),
+                    source_hash="f1",
+                    preview_size=512.0,
+                    overrides=tuple(strip_overrides()),
+                    grid=STRIP_GRID,
+                    gpu_enabled=True,
+                )
+            )
+
+        mosaics, _ = done[0]
+        self.assertEqual(len(mosaics), 4)
+        for mosaic in mosaics:
+            self.assertEqual(mosaic.shape, (8, 8, 3))
+            self.assertTrue(np.allclose(mosaic, 0.5))
+
 
 class TestStripLifecycle(unittest.TestCase):
     def setUp(self):
