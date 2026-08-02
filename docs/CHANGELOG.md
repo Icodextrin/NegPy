@@ -9,15 +9,21 @@
 - New: **Favourites panel** — a tab holding the sliders you reach for most, in your own order; each mirrors the real control and keeps its mode gating.
 - New: **Linear Output export** — a third export intent that skips the pipeline and writes the decoded source (Pakon, LinearRaw DNG, camera RAW) as an untagged linear 16-bit TIFF, WB recorded rather than applied. @thetalkingdrum
 - New: **Stitching accepts RGB-scan triplets** — each part decodes against its own green/blue exposures instead of the primary's. Also fixes RGB Scan / Half Frame dropping a composite's other parts.
+- New: **Metadata and capture roll/frame in export filename templates** — new tokens for both, frame numbers zero-padded, and roll/frame written to the negpy XMP namespace when set. @jboneng
+- New: **Selectable EXIF ImageDescription fields** — choose which process and scanning values are written, with a live preview; the selection sticks across frames. @jboneng
+- New: **Busy cue while the IR bake runs** — a toast for an uncached IR bake or hair inpaint, held until the frame lands; cache hits stay silent.
 - Change: **Flat-field profiles are self-contained** — baked to their own file store, so moving or deleting the reference image no longer silently drops the correction; legacy profiles migrate on launch. @seanharding
 - Change: **Side panels narrow further** — button rows spill into overflow menus; minimum widths drop to 92px (controls) and 170px (session).
 - Change: **Film strip scrolling** — eased wheel scrolling, one row per notch, trackpads unchanged; right-clicking empty space opens Add files / Add folder / Clear all. @linkmodo
 - Change: **Reset in the Filtration panel is icon-only** — lining its tool row up with the Tone panel's.
-- Fix: **Healed hairs no longer leave a dark line** — and both repair paths paste the frame's own grain back in instead of a grainless average.
+- Fix: **IR dust removal is more accurate on every scanner** — detection now runs at the scale it repairs, so exports stop upsampling the mask and printing dark blotches next to tonal edges; the dip landmarks adapt to weak-IR scanners (a Plustek/SilverFast HDRi DNG had most of its dust missed) while scanners at or above the reference render byte-identical; and repairs paste the frame's own grain back instead of a grainless average, so healed hairs no longer leave a dark line.
 - Fix: **Every RAW decodes on one shared scale** — LibRaw rescaled to the frame's own brightest pixel once the film base neared clipping, putting normalization bounds, flat-field, crosstalk and A/B on different scales. @thetalkingdrum
-- Fix: **IR dust removal on weak-IR scanners** — dip depth is scanner-dependent and the landmarks were Coolscan-calibrated, so a Plustek/SilverFast HDRi DNG had most of its dust missed; scanners at or above the reference render byte-identical.
 - Fix: **Arrow-key navigation lands on warm frames** — prefetch followed discovery order, not the filmstrip's sorted, filtered order. @seanharding
 - Fix: **Tethered shots are deleted off the body after download** — bodies without a capture target (X-T5) hold every object and refuse the 13th capture. @light-sntchr
+- Fix: **Two scans of one frame both open** — the content fingerprint samples the file's interior as well as its ends, so same-size scans no longer collide; existing edits, undo history and marks move to the new identity on launch.
+- Fix: **Glow and halation export at the size the preview shows** — GPU radii scale with the render instead of being fixed, and CPU and GPU now weight the highlight mask the same way.
+- Fix: **Bulk operations no longer stamp the active frame's edit onto untouched frames** — Batch Analysis, roll application, Sync and presets all start from the frame's own hydrated config. @seanharding
+- Fix: **Export Sidecars writes each frame's own edit** — a frame with no saved edit got the active frame's whole look written to its `.negpy`, which later promoted into the database. @seanharding
 
 ## 0.45.0
 
