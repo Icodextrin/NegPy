@@ -190,6 +190,26 @@ def test_ir_ratio_gain_downsamples_once_per_source(monkeypatch) -> None:
     assert len(calls) == 2, "a new source must still recompute"
 
 
+def test_ir_ratio_gain_recomputes_when_the_repaired_buffer_grows(monkeypatch) -> None:
+    """Detection follows the buffer, so a preview hit must not be served to an export of the
+    same source: same IR plane, larger buffer, different detection scale."""
+    import negpy.services.rendering.image_processor as ip
+
+    ir = np.full((200, 200), 0.9, dtype=np.float32)
+    ir[150:154, 150:154] = 0.1
+    small = np.full((200, 200, 3), 0.5, dtype=np.float32)
+    big = np.full((4000, 4000, 3), 0.5, dtype=np.float32)
+
+    targets: list = []
+    real = ip.downsample_ir
+    monkeypatch.setattr(ip, "downsample_ir", lambda p, t, **k: (targets.append(t), real(p, t, **k))[1])
+
+    service = ImageProcessor()
+    service._ir_ratio_gain(ir, small, "s")
+    service._ir_ratio_gain(ir, big, "s")
+    assert len(targets) == 2 and targets[0] != targets[1]
+
+
 def test_ir_two_tier_bake() -> None:
     """Semi-transparent dust is fixed by division, the opaque core by the
     score-weighted fill — both inside the same bake, no strokes anywhere."""
@@ -216,6 +236,29 @@ def test_ir_two_tier_bake() -> None:
 
     _, detected, _ = service._augment_retouch(cfg, baked, "s")
     assert detected is None, "no strokes for an IR-only config"
+
+
+def test_ir_bake_announces_itself_only_when_it_has_work() -> None:
+    """The bake runs for seconds at export scale, so it posts a busy cue — but only on a
+    cache miss, or every creative-slider drag would flash one."""
+    from dataclasses import replace
+
+    from negpy.features.retouch.models import RetouchConfig
+
+    ir = np.full((200, 200), 0.9, dtype=np.float32)
+    ir[150:154, 150:154] = 0.1
+    img = np.full((200, 200, 3), 0.5, dtype=np.float32)
+    img[150:154, 150:154] = 0.08
+
+    labels: list = []
+    service = ImageProcessor()
+    service.on_slow_step = labels.append
+    cfg = replace(WorkspaceConfig(), retouch=RetouchConfig(ir_dust_remove=True))
+
+    service._ir_bake(img, ir, cfg, "s")
+    assert labels == ["removing IR dust"]
+    service._ir_bake(img, ir, cfg, "s")
+    assert len(labels) == 1, "a cache hit must not post a cue"
 
 
 def test_ir_bake_fill_runs_without_attenuation() -> None:

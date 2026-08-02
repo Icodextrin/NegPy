@@ -7,7 +7,7 @@ import imagecodecs
 import numpy as np
 from dataclasses import replace as dc_replace
 from PIL import Image, ImageCms
-from typing import Tuple, Optional, Any, Dict, List
+from typing import Callable, Tuple, Optional, Any, Dict, List
 from negpy.kernel.system.logging import get_logger
 from negpy.kernel.system.config import APP_CONFIG
 from negpy.domain.types import ImageBuffer
@@ -34,6 +34,7 @@ from negpy.features.retouch.logic import (
     ir_bake_token,
     ir_defect_score,
     ir_detect_cutoff,
+    ir_detect_target,
     ir_ratio_and_gain,
     route_ir_defects,
 )
@@ -160,6 +161,10 @@ class ImageProcessor:
         self._ice_key: Optional[tuple] = None
         self._ice_value: Optional[tuple] = None
 
+        # Called with a label when a slow uncached step starts, for a UI busy cue. Set by
+        # RenderWorker; the caller runs on the render thread, so keep it to a signal emit.
+        self.on_slow_step: Optional[Callable[[str], None]] = None
+
         if APP_CONFIG.use_gpu:
             gpu = GPUDevice.get()
             if gpu.is_available:
@@ -180,21 +185,29 @@ class ImageProcessor:
         master is numerically exact and never subject to the looser GPU parity."""
         return settings.exposure.render_intent == RenderIntent.FLAT
 
+    def _slow_step(self, label: str) -> None:
+        if self.on_slow_step is not None:
+            self.on_slow_step(label)
+
     def _ir_ratio_gain(self, ir_buffer: np.ndarray, img: np.ndarray, source_key: str) -> tuple:
         """Cached (ratio_det, gain_det, degenerate, gammas) at detection scale."""
+        # Detection follows the buffer it will repair (capped): the score is upsampled onto
+        # that buffer, so a coarse detection writes a fat mask and averages over a wide
+        # support — see _IR_MAX_UPSAMPLE.
+        target = ir_detect_target(max(img.shape[:2]), APP_CONFIG.preview_render_size)
         # Key on the source shape — downsample_ir is deterministic in it, so this
         # discriminates the same as the detection shape but resolves before the
         # downsample runs. _ir_bake and _augment_retouch both call this per render;
         # keying on the result made the second call repay a full-res erode to build
         # a key it then hit.
-        key = (source_key, ir_buffer.shape)
+        key = (source_key, ir_buffer.shape, target)
         if key == self._ir_gain_key and self._ir_gain_value is not None:
             return self._ir_gain_value
-        # Min-preserving (not _detection_downsample) — INTER_AREA averages a sub-pixel
+        # Min-preserving (not _downsample_to_long_edge) — INTER_AREA averages a sub-pixel
         # hair's dip away. No-op on the preview path, where preview_ir already arrives
         # min-pooled at this scale.
-        ir_det = downsample_ir(np.ascontiguousarray(ir_buffer, dtype=np.float32), APP_CONFIG.preview_render_size)
-        val = ir_ratio_and_gain(ir_det, _detection_downsample(img))
+        ir_det = downsample_ir(np.ascontiguousarray(ir_buffer, dtype=np.float32), target)
+        val = ir_ratio_and_gain(ir_det, _downsample_to_long_edge(img, target))
         self._ir_gain_key = key
         self._ir_gain_value = val
         return val
@@ -223,6 +236,7 @@ class ImageProcessor:
         if key == self._ir_recon_key and self._ir_recon_value is not None:
             out, routed = self._ir_recon_value
         else:
+            self._slow_step("removing IR dust")
             score_det = ir_defect_score(ratio_det, ir_detect_cutoff(ret.ir_threshold, ret.ir_attenuation))
             out = apply_ir_attenuation(img, gain_det) if ret.ir_attenuation else img
             out = apply_ir_reconstruction(out, score_det)
@@ -240,6 +254,7 @@ class ImageProcessor:
         key = (source_key, round(float(ret.ir_threshold), 6), img.shape, ir_buffer.shape)
         if key == self._ice_key and self._ice_value is not None:
             return self._ice_value
+        self._slow_step("removing IR dust")
         h, w = img.shape[:2]
         long_edge = max(h, w)
         dims = None
@@ -258,6 +273,7 @@ class ImageProcessor:
         ckey = (cache_key, img.shape)
         if ckey == self._hair_key and self._hair_value is not None:
             return self._hair_value
+        self._slow_step("repairing dust")
         out = apply_hair_inpaint(img, hair_masks)
         self._hair_key = ckey
         self._hair_value = out
