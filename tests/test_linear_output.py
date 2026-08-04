@@ -2,21 +2,26 @@
 
 import io
 import os
+from unittest import mock
 
 import numpy as np
 import pytest
 import tifffile
 
 from negpy.features.geometry.models import GeometryConfig
+from negpy.features.rgbscan.models import RgbScanConfig
+from negpy.features.stitch.models import StitchConfig
 from negpy.kernel.image.logic import apply_exif_orientation
 from negpy.services.export.linear_output import (
     _CameraWB,
     _SourceMeta,
+    _apply_white_balance,
     _build_xmp,
     _default_pakon_expansion,
     _effective_expansion,
     _is_camera_raw,
     _normalize_wb_rgb,
+    _source_format_label,
     _write_tiff,
     export_linear_output,
     export_linear_output_bytes,
@@ -434,15 +439,16 @@ class TestCameraRawSupport:
         assert _is_camera_raw(path)
 
     def test_normalize_wb_rgb(self) -> None:
-        r, g, b = _normalize_wb_rgb((398.0, 302.0, 873.0, 0.0))
+        r, g, b = _normalize_wb_rgb((398.0, 302.0, 873.0, 304.0))
         assert g == 1.0
-        assert abs(r - 398.0 / 302.0) < 1e-6
-        assert abs(b - 873.0 / 302.0) < 1e-6
+        g_avg = (302.0 + 304.0) / 2.0
+        assert abs(r - 398.0 / g_avg) < 1e-6
+        assert abs(b - 873.0 / g_avg) < 1e-6
 
     def test_build_xmp_maketiff_format(self) -> None:
         wb = _CameraWB(
-            as_shot=(398.0, 302.0, 873.0, 0.0),
-            daylight=(1.94, 0.94, 1.38, 0.0),
+            as_shot=(398.0, 302.0, 873.0, 304.0),
+            daylight=(1.94, 0.94, 1.38, 0.96),
         )
         xmp = _build_xmp("/path/to/DSCF3404.RAF", wb)
         text = xmp.decode("utf-8")
@@ -540,3 +546,512 @@ class TestF335Detection:
             tags = tf.pages[0].tags
             assert tags["Make"].value == "Pakon"
             assert "F335" in tags["Model"].value
+
+
+def _make_fake_camera_raws(tmp_dir: str, h: int = 40, w: int = 60) -> tuple[str, str, str]:
+    """Create three empty .nef files to act as triplet paths."""
+    paths = []
+    for name in ("red.nef", "green.nef", "blue.nef"):
+        p = os.path.join(tmp_dir, name)
+        open(p, "wb").close()
+        paths.append(p)
+    return tuple(paths)  # type: ignore[return-value]
+
+
+def _triplet_buffers(h: int = 40, w: int = 60) -> dict[str, np.ndarray]:
+    """Synthetic RGB buffers where each exposure is bright in its own channel."""
+    r = np.full((h, w, 3), 0.1, dtype=np.float32)
+    r[..., 0] = 0.8
+    g = np.full((h, w, 3), 0.1, dtype=np.float32)
+    g[..., 1] = 0.7
+    b = np.full((h, w, 3), 0.1, dtype=np.float32)
+    b[..., 2] = 0.9
+    return {"r": r, "g": g, "b": b}
+
+
+_MOCK_WB = _CameraWB(as_shot=(1.5, 1.0, 2.0, 1.0), daylight=(2.0, 1.0, 1.5, 1.0))
+_MOCK_META = _SourceMeta(make="Nikon", model="D850", datetime="2026:01:01 12:00:00")
+
+
+class TestTripletExport:
+    """Linear Output with RGB-scan triplet merge."""
+
+    def _patch_decode(self, paths: tuple[str, str, str], bufs: dict[str, np.ndarray]):
+        mapping = {paths[0]: bufs["r"], paths[1]: bufs["g"], paths[2]: bufs["b"]}
+
+        def fake_decode(path: str):
+            return mapping[path], _MOCK_WB, _MOCK_META
+
+        return mock.patch(
+            "negpy.services.export.linear_output._decode_camera_raw_buffer",
+            side_effect=fake_decode,
+        )
+
+    def test_triplet_produces_merged_tiff(self, tmp_path: str) -> None:
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        rgbscan = RgbScanConfig(enabled=True, green_path=paths[1], blue_path=paths[2], align=False)
+        out = os.path.join(str(tmp_path), "triplet_linear.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out, rgbscan=rgbscan)
+
+        assert os.path.exists(out)
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.dtype == np.uint16
+            assert arr.shape == (40, 60, 3)
+            f32 = arr.astype(np.float32) / 65535.0
+            assert f32[0, 0, 0] == pytest.approx(0.8, abs=0.01)
+            assert f32[0, 0, 1] == pytest.approx(0.7, abs=0.01)
+            assert f32[0, 0, 2] == pytest.approx(0.9, abs=0.01)
+
+    def test_triplet_channels_from_correct_exposures(self, tmp_path: str) -> None:
+        """Red channel from red exposure, green from green, blue from blue."""
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        rgbscan = RgbScanConfig(enabled=True, green_path=paths[1], blue_path=paths[2], align=False)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out, rgbscan=rgbscan)
+
+        with tifffile.TiffFile(out) as tf:
+            f32 = tf.pages[0].asarray().astype(np.float32) / 65535.0
+            assert f32[..., 0].mean() == pytest.approx(0.8, abs=0.01)
+            assert f32[..., 1].mean() == pytest.approx(0.7, abs=0.01)
+            assert f32[..., 2].mean() == pytest.approx(0.9, abs=0.01)
+
+    def test_triplet_description_mentions_triplet(self, tmp_path: str) -> None:
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        rgbscan = RgbScanConfig(enabled=True, green_path=paths[1], blue_path=paths[2], align=False)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out, rgbscan=rgbscan)
+
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "RGB triplet" in desc
+
+    def test_triplet_preserves_wb_metadata(self, tmp_path: str) -> None:
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        rgbscan = RgbScanConfig(enabled=True, green_path=paths[1], blue_path=paths[2], align=False)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out, rgbscan=rgbscan)
+
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "no WB applied" in desc
+            assert "as-shot:" in desc
+
+    def test_triplet_preserves_make_model(self, tmp_path: str) -> None:
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        rgbscan = RgbScanConfig(enabled=True, green_path=paths[1], blue_path=paths[2], align=False)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out, rgbscan=rgbscan)
+
+        with tifffile.TiffFile(out) as tf:
+            tags = tf.pages[0].tags
+            assert tags["Make"].value == "Nikon"
+            assert tags["Model"].value == "D850"
+
+    def test_triplet_with_geometry(self, tmp_path: str) -> None:
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        rgbscan = RgbScanConfig(enabled=True, green_path=paths[1], blue_path=paths[2], align=False)
+        geo = GeometryConfig(rotation=1)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out, geometry=geo, rgbscan=rgbscan)
+
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.shape == (60, 40, 3)
+
+    def test_no_triplet_without_rgbscan(self, tmp_path: str) -> None:
+        """Without rgbscan config, camera RAW goes through the normal single-file path."""
+        paths = _make_fake_camera_raws(str(tmp_path))
+        bufs = _triplet_buffers()
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(paths, bufs):
+            export_linear_output(paths[0], out)
+
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.shape == (40, 60, 3)
+            f32 = arr.astype(np.float32) / 65535.0
+            assert f32[0, 0, 0] == pytest.approx(0.8, abs=0.01)
+            assert f32[0, 0, 1] == pytest.approx(0.1, abs=0.01)
+
+    def test_source_format_label_triplet(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "test.nef")
+        open(path, "wb").close()
+        rgbscan = RgbScanConfig(enabled=True, green_path="g.nef", blue_path="b.nef")
+        assert _source_format_label(path, rgbscan) == "camera RAW (RGB triplet)"
+        assert _source_format_label(path) == "camera RAW"
+
+
+def _make_stitch_config(
+    part1_path: str,
+    w: int = 60,
+    h: int = 40,
+    triplets: tuple[tuple[str, str], ...] = (),
+) -> StitchConfig:
+    """Two side-by-side parts with 10px overlap, identity + offset transforms."""
+    offset = w - 10
+    return StitchConfig(
+        stitch_enabled=True,
+        stitch_paths=(part1_path,),
+        stitch_transforms=(
+            (1.0, 0.0, 0.0, 0.0, 1.0, 0.0),
+            (1.0, 0.0, float(offset), 0.0, 1.0, 0.0),
+        ),
+        stitch_canvas=(w + offset, h),
+        stitch_sizes=((w, h), (w, h)),
+        stitch_triplets=triplets,
+    )
+
+
+class TestStitchExport:
+    """Linear Output with stitch composites."""
+
+    def _patch_decode(self, path_to_buf: dict[str, np.ndarray]):
+        def fake_decode(path: str):
+            return path_to_buf[path], _MOCK_WB, _MOCK_META
+
+        return mock.patch(
+            "negpy.services.export.linear_output._decode_camera_raw_buffer",
+            side_effect=fake_decode,
+        )
+
+    def test_stitch_produces_composite_tiff(self, tmp_path: str) -> None:
+        p0 = os.path.join(str(tmp_path), "part0.nef")
+        p1 = os.path.join(str(tmp_path), "part1.nef")
+        for p in (p0, p1):
+            open(p, "wb").close()
+
+        h, w = 40, 60
+        buf0 = np.full((h, w, 3), 0.4, dtype=np.float32)
+        buf1 = np.full((h, w, 3), 0.6, dtype=np.float32)
+        stitch = _make_stitch_config(p1, w=w, h=h)
+        out = os.path.join(str(tmp_path), "stitch_linear.tiff")
+
+        with self._patch_decode({p0: buf0, p1: buf1}):
+            export_linear_output(p0, out, stitch=stitch)
+
+        assert os.path.exists(out)
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.dtype == np.uint16
+            expected_w = w + (w - 10)
+            assert arr.shape == (h, expected_w, 3)
+
+    def test_stitch_description_mentions_stitch(self, tmp_path: str) -> None:
+        p0 = os.path.join(str(tmp_path), "part0.nef")
+        p1 = os.path.join(str(tmp_path), "part1.nef")
+        for p in (p0, p1):
+            open(p, "wb").close()
+
+        h, w = 40, 60
+        buf = np.full((h, w, 3), 0.5, dtype=np.float32)
+        stitch = _make_stitch_config(p1, w=w, h=h)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode({p0: buf, p1: buf}):
+            export_linear_output(p0, out, stitch=stitch)
+
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "stitch 2-part" in desc
+
+    def test_stitch_preserves_make_model(self, tmp_path: str) -> None:
+        p0 = os.path.join(str(tmp_path), "part0.nef")
+        p1 = os.path.join(str(tmp_path), "part1.nef")
+        for p in (p0, p1):
+            open(p, "wb").close()
+
+        h, w = 40, 60
+        buf = np.full((h, w, 3), 0.5, dtype=np.float32)
+        stitch = _make_stitch_config(p1, w=w, h=h)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode({p0: buf, p1: buf}):
+            export_linear_output(p0, out, stitch=stitch)
+
+        with tifffile.TiffFile(out) as tf:
+            tags = tf.pages[0].tags
+            assert tags["Make"].value == "Nikon"
+            assert tags["Model"].value == "D850"
+
+    def test_stitch_with_geometry(self, tmp_path: str) -> None:
+        p0 = os.path.join(str(tmp_path), "part0.nef")
+        p1 = os.path.join(str(tmp_path), "part1.nef")
+        for p in (p0, p1):
+            open(p, "wb").close()
+
+        h, w = 40, 60
+        buf = np.full((h, w, 3), 0.5, dtype=np.float32)
+        stitch = _make_stitch_config(p1, w=w, h=h)
+        geo = GeometryConfig(rotation=1)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode({p0: buf, p1: buf}):
+            export_linear_output(p0, out, geometry=geo, stitch=stitch)
+
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            expected_w = w + (w - 10)
+            assert arr.shape == (expected_w, h, 3)
+
+    def test_stitch_with_triplets(self, tmp_path: str) -> None:
+        """Stitch where each part is an RGB triplet."""
+        p0r = os.path.join(str(tmp_path), "p0_r.nef")
+        p0g = os.path.join(str(tmp_path), "p0_g.nef")
+        p0b = os.path.join(str(tmp_path), "p0_b.nef")
+        p1r = os.path.join(str(tmp_path), "p1_r.nef")
+        p1g = os.path.join(str(tmp_path), "p1_g.nef")
+        p1b = os.path.join(str(tmp_path), "p1_b.nef")
+        for p in (p0r, p0g, p0b, p1r, p1g, p1b):
+            open(p, "wb").close()
+
+        h, w = 40, 60
+        bufs = {}
+        for path, ch in [(p0r, 0), (p0g, 1), (p0b, 2), (p1r, 0), (p1g, 1), (p1b, 2)]:
+            arr = np.full((h, w, 3), 0.1, dtype=np.float32)
+            arr[..., ch] = 0.7
+            bufs[path] = arr
+
+        triplets = ((p0g, p0b), (p1g, p1b))
+        stitch = _make_stitch_config(p1r, w=w, h=h, triplets=triplets)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(bufs):
+            export_linear_output(p0r, out, stitch=stitch)
+
+        assert os.path.exists(out)
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "stitch 2-part" in desc
+            assert "RGB triplet" in desc
+
+    def test_stitch_triplet_no_wb_in_output(self, tmp_path: str) -> None:
+        """Triplet composites don't record WB (narrowband captures have no meaningful WB)."""
+        p0r = os.path.join(str(tmp_path), "p0_r.nef")
+        p0g = os.path.join(str(tmp_path), "p0_g.nef")
+        p0b = os.path.join(str(tmp_path), "p0_b.nef")
+        p1r = os.path.join(str(tmp_path), "p1_r.nef")
+        p1g = os.path.join(str(tmp_path), "p1_g.nef")
+        p1b = os.path.join(str(tmp_path), "p1_b.nef")
+        for p in (p0r, p0g, p0b, p1r, p1g, p1b):
+            open(p, "wb").close()
+
+        h, w = 40, 60
+        buf = np.full((h, w, 3), 0.5, dtype=np.float32)
+        bufs = {p: buf for p in (p0r, p0g, p0b, p1r, p1g, p1b)}
+
+        triplets = ((p0g, p0b), (p1g, p1b))
+        stitch = _make_stitch_config(p1r, w=w, h=h, triplets=triplets)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode(bufs):
+            export_linear_output(p0r, out, stitch=stitch)
+
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "as-shot:" not in desc
+
+    def test_source_format_label_stitch(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "test.nef")
+        open(path, "wb").close()
+        stitch = StitchConfig(stitch_enabled=True, stitch_paths=("/p1.nef",))
+        assert "stitch 2-part" in _source_format_label(path, stitch=stitch)
+
+    def test_source_format_label_stitch_triplet(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "test.nef")
+        open(path, "wb").close()
+        stitch = StitchConfig(
+            stitch_enabled=True,
+            stitch_paths=("/p1.nef",),
+            stitch_triplets=(("g0.nef", "b0.nef"), ("g1.nef", "b1.nef")),
+        )
+        label = _source_format_label(path, stitch=stitch)
+        assert "stitch 2-part" in label
+        assert "RGB triplet" in label
+
+
+class TestLinearCorrections:
+    """Tests for optional per-step corrections (WB, flatfield, sensor)."""
+
+    def _patch_decode(self, path_to_buf: dict[str, np.ndarray]):
+        def fake_decode(path: str):
+            return path_to_buf[path], _MOCK_WB, _MOCK_META
+
+        return mock.patch(
+            "negpy.services.export.linear_output._decode_camera_raw_buffer",
+            side_effect=fake_decode,
+        )
+
+    def test_apply_white_balance_scales_channels(self) -> None:
+        f32 = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        wb = _CameraWB(as_shot=(2.0, 1.0, 3.0, 1.0), daylight=(1.0, 1.0, 1.0, 1.0))
+        result = _apply_white_balance(f32, wb)
+        assert result.shape == f32.shape
+        np.testing.assert_allclose(result[:, :, 0], 1.0, atol=1e-6)
+        np.testing.assert_allclose(result[:, :, 1], 0.5, atol=1e-6)
+        np.testing.assert_allclose(result[:, :, 2], 1.0, atol=1e-6)
+
+    def test_apply_white_balance_clamps(self) -> None:
+        f32 = np.full((4, 4, 3), 0.8, dtype=np.float32)
+        wb = _CameraWB(as_shot=(2.0, 1.0, 2.0, 1.0), daylight=(1.0, 1.0, 1.0, 1.0))
+        result = _apply_white_balance(f32, wb)
+        assert result.max() <= 1.0
+
+    def test_apply_wb_flag_bakes_wb(self, tmp_path: str) -> None:
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode({p: buf}):
+            export_linear_output(p, out, apply_wb=True)
+
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "WB applied" in desc
+            assert "no WB applied" not in desc
+
+    def test_no_apply_wb_flag_records_raw(self, tmp_path: str) -> None:
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with self._patch_decode({p: buf}):
+            export_linear_output(p, out, apply_wb=False)
+
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "no WB applied" in desc
+
+    def test_apply_flatfield_calls_correction(self, tmp_path: str) -> None:
+        from negpy.features.flatfield.models import FlatFieldConfig
+
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        ff = FlatFieldConfig(apply=True, profile_id="test")
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with (
+            self._patch_decode({p: buf}),
+            mock.patch("negpy.services.export.linear_output._apply_flatfield_correction", return_value=buf) as ff_mock,
+        ):
+            export_linear_output(p, out, flatfield=ff, apply_flatfield=True)
+
+        ff_mock.assert_called_once()
+        with tifffile.TiffFile(out) as tf:
+            assert "flatfield" in tf.pages[0].description
+
+    def test_no_apply_flatfield_skips(self, tmp_path: str) -> None:
+        from negpy.features.flatfield.models import FlatFieldConfig
+
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        ff = FlatFieldConfig(apply=True, profile_id="test")
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with (
+            self._patch_decode({p: buf}),
+            mock.patch("negpy.services.export.linear_output._apply_flatfield_correction", return_value=buf) as ff_mock,
+        ):
+            export_linear_output(p, out, flatfield=ff, apply_flatfield=False)
+
+        ff_mock.assert_not_called()
+
+    def test_apply_sensor_calls_correction(self, tmp_path: str) -> None:
+        from negpy.features.process.models import ProcessConfig
+
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        matrix = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        proc = ProcessConfig(sensor_matrix=matrix)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with (
+            self._patch_decode({p: buf}),
+            mock.patch("negpy.services.export.linear_output.apply_sensor_correction", return_value=buf) as sc_mock,
+        ):
+            export_linear_output(p, out, process=proc, apply_sensor=True)
+
+        sc_mock.assert_called_once()
+        with tifffile.TiffFile(out) as tf:
+            assert "sensor" in tf.pages[0].description
+
+    def test_apply_sensor_noop_without_matrix(self, tmp_path: str) -> None:
+        from negpy.features.process.models import ProcessConfig
+
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        proc = ProcessConfig(sensor_matrix=None)
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with (
+            self._patch_decode({p: buf}),
+            mock.patch("negpy.services.export.linear_output.apply_sensor_correction", return_value=buf) as sc_mock,
+        ):
+            export_linear_output(p, out, process=proc, apply_sensor=True)
+
+        sc_mock.assert_not_called()
+
+    def test_no_apply_sensor_skips(self, tmp_path: str) -> None:
+        from negpy.features.process.models import ProcessConfig
+
+        p = os.path.join(str(tmp_path), "photo.nef")
+        open(p, "wb").close()
+
+        buf = np.full((10, 10, 3), 0.3, dtype=np.float32)
+        proc = ProcessConfig()
+        out = os.path.join(str(tmp_path), "out.tiff")
+
+        with (
+            self._patch_decode({p: buf}),
+            mock.patch("negpy.services.export.linear_output.apply_sensor_correction", return_value=buf) as sc_mock,
+        ):
+            export_linear_output(p, out, process=proc, apply_sensor=False)
+
+        sc_mock.assert_not_called()
+
+    def test_description_lists_corrections(self, tmp_path: str) -> None:
+        f32 = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        out = os.path.join(str(tmp_path), "out.tiff")
+        _write_tiff(f32, out, "test.nef", flatfield_applied=True, sensor_applied=True)
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "corrections: flatfield, sensor" in desc
+
+    def test_description_no_corrections_by_default(self, tmp_path: str) -> None:
+        f32 = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        out = os.path.join(str(tmp_path), "out.tiff")
+        _write_tiff(f32, out, "test.nef")
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "corrections:" not in desc

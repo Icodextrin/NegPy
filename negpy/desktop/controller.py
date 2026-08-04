@@ -3362,8 +3362,11 @@ class AppController(QObject):
             return
 
         exported = 0
-        geometry = self.state.config.geometry
+        cfg = self.state.config
+        geometry = cfg.geometry
         expansion = self.state.linear_expansion
+        rgbscan = cfg.rgbscan
+        stitch = cfg.stitch if cfg.stitch.stitch_enabled else None
         for f in supported:
             stem = os.path.splitext(os.path.basename(f["path"]))[0]
             out_path = os.path.join(export_path, f"{stem}_linear.tiff")
@@ -3372,7 +3375,19 @@ class AppController(QObject):
                 out_path = os.path.join(export_path, f"{stem}_linear_{counter}.tiff")
                 counter += 1
             try:
-                export_linear_output(f["path"], out_path, geometry=geometry, expansion=expansion)
+                export_linear_output(
+                    f["path"],
+                    out_path,
+                    geometry=geometry,
+                    expansion=expansion,
+                    rgbscan=rgbscan,
+                    stitch=stitch,
+                    flatfield=cfg.flatfield,
+                    process=cfg.process,
+                    apply_wb=self.state.linear_apply_wb,
+                    apply_flatfield=self.state.linear_apply_flatfield,
+                    apply_sensor=self.state.linear_apply_sensor,
+                )
                 exported += 1
             except Exception as e:
                 logger.warning("Linear output failed for %s: %s", f.get("name"), e)
