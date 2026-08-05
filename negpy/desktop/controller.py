@@ -52,7 +52,7 @@ from negpy.domain.models import (
     preset_from_export_config,
     resolve_preset_export,
 )
-from negpy.services.assets.half_frame import base_hash, slice_half
+from negpy.services.assets.half_frame import half_hash
 from negpy.services.assets.sidecar import load_or_promote, write_sidecar
 from negpy.features.exposure.analysis import (
     RING_GRID,
@@ -161,6 +161,7 @@ class _DiscoveryRequest:
     rgb_scan: bool
     half_frame: bool
     restore_stitches: Optional[dict] = None
+    half_frame_profile: Optional[dict] = None  # {crop_rect, split_x, gutter_thickness}
 
 
 def baseline_compare_config(config: WorkspaceConfig) -> WorkspaceConfig:
@@ -805,6 +806,7 @@ class AppController(QObject):
             rgb_scan=bool(self.session.repo.get_global_setting("rgbscan_mode", False)),
             half_frame=bool(self.session.repo.get_global_setting("half_frame_mode", False)),
             restore_stitches=restore_stitches,
+            half_frame_profile=self.half_frame_profile(),
         )
         if self._discovery_running:
             self._pending_asset_discoveries.append(request)
@@ -838,6 +840,7 @@ class AppController(QObject):
             restore_triplets=request.restore_triplets,
             half_frame=request.half_frame,
             restore_stitches=request.restore_stitches,
+            half_frame_profile=request.half_frame_profile,
         )
         self.asset_discovery_requested.emit(task)
 
@@ -992,6 +995,67 @@ class AppController(QObject):
             return
         self.request_asset_discovery(_component_paths(files), replace_existing=True, reselect_path=self.state.current_file_path)
 
+    # ── half-frame split & crop profile ─────────────────────────────────
+
+    _HALF_FRAME_PROFILE_KEY = "half_frame_profile"
+
+    def half_frame_profile(self) -> dict | None:
+        """Saved ``(crop_rect, split_x, gutter_thickness)`` profile, shared across
+        every half-frame split. Scanner-independent — the same crop/split applies
+        whether the scans came from a SANE scanner, a camera copy-stand, or a
+        folder import."""
+        return self.session.repo.get_global_setting(self._HALF_FRAME_PROFILE_KEY, default=None)
+
+    def save_half_frame_profile(self, crop_rect, split_x: float, gutter_thickness: float) -> None:
+        self.session.repo.save_global_setting(
+            self._HALF_FRAME_PROFILE_KEY,
+            {
+                "crop_rect": list(crop_rect),
+                "split_x": float(split_x),
+                "gutter_thickness": float(gutter_thickness),
+            },
+        )
+
+    def open_half_frame_dialog(self, file_path: str) -> dict | None:
+        """Open the half-frame split & crop editor on one scan; return the profile
+        dict on Apply, None on cancel."""
+        import numpy as np
+
+        from negpy.desktop.view.widgets.half_frame_dialog import HalfFrameDialog
+        from negpy.services.assets.half_frame import detect_split_x
+        from negpy.services.assets.thumbnails import decode_source_image
+
+        try:
+            img = decode_source_image(file_path)
+            if img is None:
+                return None
+            buf = np.asarray(img)
+        except Exception as e:
+            self.set_status(f"Could not load preview: {e}")
+            return None
+
+        saved = self.half_frame_profile()
+        initial_rect = tuple(saved["crop_rect"]) if saved else None
+        initial_split = saved["split_x"] if saved else detect_split_x(buf)
+        initial_gutter = saved["gutter_thickness"] if saved else 0.0
+
+        dialog = HalfFrameDialog(
+            buf,
+            initial_rect=initial_rect,
+            initial_split=initial_split,
+            initial_gutter=initial_gutter,
+            parent=None,
+        )
+        if dialog.exec():
+            profile = {
+                "crop_rect": list(dialog.crop_rect()),
+                "split_x": dialog.split_x(),
+                "gutter_thickness": dialog.gutter_thickness(),
+            }
+            self.save_half_frame_profile(profile["crop_rect"], profile["split_x"], profile["gutter_thickness"])
+            return profile
+        return None
+
     def _on_discovery_progress(self, current: int, total: int, name: str) -> None:
         self.set_status(f"HASHING {current}/{total}: {name}")
         self.status_progress_requested.emit(current, total)
@@ -1086,16 +1150,34 @@ class AppController(QObject):
                 return f.get("hash")
         return None
 
-    def _active_half(self) -> Optional[tuple[int, float]]:
-        """(half, split_x) of the active asset, or None for whole-frame assets."""
-        h = self.state.current_file_hash
-        if not h:
+    def _half_slice_for_asset(
+        self, path: Optional[str], file_hash: Optional[str]
+    ) -> Optional[tuple[int, float, tuple[float, float, float, float] | None, float]]:
+        """(half, split_x, crop_rect, gutter_thickness) for the asset at path/hash, or None."""
+        if not file_hash:
             return None
         for f in self.state.uploaded_files:
-            if f.get("hash") == h:
+            if f.get("hash") == file_hash or (path and f.get("path") == path and f.get("hash") == file_hash):
                 half = int(f.get("half") or 0)
-                return (half, float(f.get("split_x") or 0.5)) if half else None
+                if not half:
+                    return None
+                cr = f.get("crop_rect")
+                crop_rect: tuple[float, float, float, float] | None = None
+                if isinstance(cr, (tuple, list)):
+                    vals = tuple(float(v) for v in cr)
+                    if len(vals) == 4:
+                        crop_rect = vals  # type: ignore[assignment]
+                return (
+                    half,
+                    float(f.get("split_x") or 0.5),
+                    crop_rect,
+                    float(f.get("gutter_thickness") or 0.0),
+                )
         return None
+
+    def _active_half(self) -> Optional[tuple[int, float, tuple[float, float, float, float] | None, float]]:
+        """(half, split_x, crop_rect, gutter_thickness) of the active asset, or None for whole-frame."""
+        return self._half_slice_for_asset(self.state.current_file_path, self.state.current_file_hash)
 
     def _render_memo_key(self, config: Optional[WorkspaceConfig] = None) -> str:
         """Identity of everything that shapes the displayed render of the current
@@ -1205,13 +1287,16 @@ class AppController(QObject):
         rgbscan = self.state.config.rgbscan
         stitch = self.state.config.stitch
         flatfield = self.state.config.flatfield
+        half_info = self._active_half()
         self.preview_load_requested.emit(
             PreviewLoadTask(
                 file_path=file_path,
                 workspace_color_space=self.state.workspace_color_space,
                 use_camera_wb=not self.state.config.process.linear_raw,
                 full_resolution=self.state.hq_preview,
-                file_hash=base_hash(self._file_hash_for_path(file_path)),  # halves share the per-file decode cache
+                # The half suffix distinguishes the two halves' preview caches now
+                # that the slice happens pre-downsample (each half is its own buffer).
+                file_hash=self._file_hash_for_path(file_path),
                 # A memoized frame is already painted — the embedded-JPEG splash
                 # would repaint stale pixels over it.
                 use_splash=memo is None,
@@ -1230,24 +1315,16 @@ class AppController(QObject):
                 stitch_triplets=stitch.stitch_triplets if stitch.stitch_enabled else (),
                 stitch_align=stitch.stitch_align,
                 flatfield_profile_id=flatfield.profile_id if (stitch.stitch_enabled and flatfield.apply) else "",
+                half_slice=half_info,
             )
         )
 
     def _split_active_half(self, raw: Any, dims: Any) -> tuple[Any, Any]:
-        """Slice a full-frame decode/splash down to the active half asset (no-op otherwise).
-
-        Both halves decode identically, so slicing by the current selection is safe
-        even for a stale same-path load; cached buffers are read-only, hence the copy.
+        """No-op: the half-frame slice now happens in PreviewManager before the
+        preview downsample, so both splash and linear buffers arrive already
+        sliced to the active half (and at the same pixels export analyzes).
+        Kept as a passthrough for the splash/loaded handlers that still call it.
         """
-        half_info = self._active_half()
-        if half_info is None:
-            return raw, dims
-        half, split_x = half_info
-        raw = np.ascontiguousarray(slice_half(raw, half, split_x))
-        if dims is not None:
-            h0, w0 = dims
-            xs = min(max(int(round(w0 * split_x)), 1), w0 - 1)
-            dims = (h0, xs) if half == 1 else (h0, w0 - xs)
         return raw, dims
 
     def _on_splash_preview(self, file_path: str, raw: Any, dims: Any) -> None:
@@ -1317,6 +1394,7 @@ class AppController(QObject):
                 # the wrong key and navigation re-decodes anyway.
                 saved = self.session.repo.load_file_settings(h) if h else None
                 linear_raw = saved.process.linear_raw if saved else False
+                neighbour_half = self._half_slice_for_asset(path, h)
                 self.preview_load_requested.emit(
                     PreviewLoadTask(
                         file_path=path,
@@ -1325,9 +1403,10 @@ class AppController(QObject):
                         # Half-size only: a full-res HQ neighbour (~720MB) evicts the
                         # active buffer; the cache key separates resolutions.
                         full_resolution=False,
-                        file_hash=base_hash(h),
+                        file_hash=h,
                         use_splash=False,
                         for_cache_warm=True,
+                        half_slice=neighbour_half,
                     )
                 )
 
@@ -3244,8 +3323,49 @@ class AppController(QObject):
     def _batch_params_for(self, f: dict) -> WorkspaceConfig:
         """Resolve a visible frame's export params: its saved DB config (else the current
         config), with its own RGB-scan green/blue re-injected from the asset dict — the
-        same authoritative source individual export gets via select_file."""
-        params = self.session.repo.load_file_settings(f["hash"]) or self.state.config
+        same authoritative source individual export gets via select_file.
+
+        For the currently active file, always use the live session config to ensure
+        unsaved edits (e.g., crosstalk adjustments not yet persisted) are included
+        in the export.
+
+        Half-frame siblings share capture-side spectral-crosstalk calibration — if one
+        half has it enabled and the other's DB entry defaults to 0, propagate the active
+        session value so both frames get identical dye-unmixing during export.
+        """
+        # For the active file, use the live session config — it may have unsaved
+        # changes that the user expects to see in the export. For other files, use
+        # saved DB settings (or fall back to session config if none exist).
+        if f.get("hash") == self.state.current_file_hash:
+            params = self.state.config
+        else:
+            params = self.session.repo.load_file_settings(f["hash"]) or self.state.config
+
+        # Propagate capture-side crosstalk between sibling half-frames. The dye-unmix
+        # calibration is a property of the scanner-film pair, not individual frames —
+        # if one half was calibrated and the other wasn't (still at default), both need
+        # the same correction during export.
+        base = f.get("hash", "")
+        if "#" in base:
+            half_val = int(base.split("#")[-1])
+            sibling_hash = half_hash(base.rsplit("#", 1)[0], 3 - half_val)
+            sibling_params = self.session.repo.load_file_settings(sibling_hash)
+            session_ct = self.state.config.process.crosstalk_strength
+            params_ct = params.process.crosstalk_strength
+            sibling_ct = sibling_params.process.crosstalk_strength if sibling_params else session_ct
+            # If this frame's crosstalk differs from the sibling but is at default (0),
+            # inherit the sibling's value so both get identical correction.
+            if abs(params_ct) < 1e-9 and abs(sibling_ct) > 1e-9:
+                proc = params.process
+                params = replace(
+                    params,
+                    process=replace(
+                        proc,
+                        crosstalk_strength=sibling_ct,
+                        crosstalk_matrix=sibling_params.process.crosstalk_matrix if sibling_params else proc.crosstalk_matrix,
+                    ),
+                )
+
         return resolve_asset_stitch(resolve_asset_rgbscan(params, f), f)
 
     def _tasks_for_file(
@@ -3418,17 +3538,34 @@ class AppController(QObject):
             export_conf = flat_export_config(export_conf)
         source_exif = self.state.source_exif.get(self.state.current_file_hash or "")
 
+        # Reuse the asset dict from uploaded_files so half-frame fields
+        # (half, split_x, crop_rect, gutter_thickness) reach the exporter —
+        # without them process_export gets half=0 and renders the whole scan
+        # instead of the half, dropping the crop and shifting log bounds.
+        file_info = next(
+            (f for f in self.state.uploaded_files if f.get("hash") == self.state.current_file_hash),
+            None,
+        )
+        if file_info is None:
+            file_info = {
+                "name": os.path.basename(self.state.current_file_path),
+                "path": self.state.current_file_path,
+                "hash": self.state.current_file_hash,
+            }
+
+        bounds_override = None
+        if file_info.get("hash") == self.state.current_file_hash:
+            with self.state.metrics_lock:
+                bounds_override = self.state.last_metrics.get("log_bounds")
+
         self._run_export_tasks(
             [
                 ExportTask(
-                    file_info={
-                        "name": os.path.basename(self.state.current_file_path),
-                        "path": self.state.current_file_path,
-                        "hash": self.state.current_file_hash,
-                    },
+                    file_info=file_info,
                     params=params,
                     export_settings=preset_from_export_config(export_conf),
                     gpu_enabled=self.state.gpu_enabled,
+                    bounds_override=bounds_override,
                     source_exif=source_exif,
                     metadata_config=self.state.config.metadata,
                     working_color_space=self.state.workspace_color_space,
