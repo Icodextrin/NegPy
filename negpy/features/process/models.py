@@ -66,7 +66,7 @@ class ProcessConfig:
     # `color_separation` is migrated in WorkspaceConfig.from_flat_dict.
     crosstalk_strength: float = 0.0
     crosstalk_matrix: Optional[tuple] = None
-    crosstalk_profile: str = "Default"
+    crosstalk_profile: str = "Generic C41"
 
     # Sensor (CFA) crosstalk unmix on the LINEAR capture, before inversion —
     # a per-setup property calibrated from three bare-light R/G/B exposures
@@ -74,6 +74,10 @@ class ProcessConfig:
     # profile; None = off (no built-in default).
     sensor_matrix: Optional[tuple] = None
     sensor_profile: str = "None"
+
+    # Light-source hue rotation in degrees, applied to the print in CIELAB a*b*
+    # (features/process/hue.py); 0.0 = off.
+    hue_trim: float = 0.0
 
     lock_bounds: bool = False
 
