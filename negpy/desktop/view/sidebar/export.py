@@ -594,6 +594,29 @@ class ExportSidebar(BaseSidebar):
         self.linear_sensor_checkbox.toggled.connect(self._on_linear_correction_changed)
         box.addWidget(self.linear_sensor_checkbox)
 
+        self.linear_ice_checkbox = QCheckBox("Apply ICE dust removal")
+        self.linear_ice_checkbox.setToolTip("Apply IR-based dust and scratch correction")
+        self.linear_ice_checkbox.setChecked(self.state.linear_apply_ice)
+        self.linear_ice_checkbox.setVisible(False)
+        self.linear_ice_checkbox.toggled.connect(self._on_linear_correction_changed)
+        box.addWidget(self.linear_ice_checkbox)
+
+        gamma_row = QHBoxLayout()
+        gamma_row.setContentsMargins(0, 0, 0, 0)
+        self.linear_gamma_label = field_label("Input gamma")
+        gamma_row.addWidget(self.linear_gamma_label)
+        self.linear_gamma_combo = QComboBox()
+        self.linear_gamma_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        gamma_row.addWidget(self.linear_gamma_combo)
+        self.linear_gamma_row = QWidget()
+        self.linear_gamma_row.setLayout(gamma_row)
+        self.linear_gamma_row.setVisible(False)
+        box.addWidget(self.linear_gamma_row)
+        self.linear_gamma_hint = hint_label("Select the gamma encoding of the input TIFF so it can be linearized before export.")
+        self.linear_gamma_hint.setVisible(False)
+        box.addWidget(self.linear_gamma_hint)
+        self.linear_gamma_combo.currentIndexChanged.connect(self._on_linear_gamma_changed)
+
         self.linear_corrections_hint = hint_label(
             "Corrections are baked in and cannot be undone from the exported file. Re-export from the original RAW to get uncorrected data."
         )
@@ -616,11 +639,15 @@ class ExportSidebar(BaseSidebar):
             self.linear_expansion_hint.setVisible(linear_on)
             if linear_on:
                 self._refresh_linear_expansion_combo()
+        if hasattr(self, "linear_gamma_row") and not linear_on:
+            self.linear_gamma_row.setVisible(False)
+            self.linear_gamma_hint.setVisible(False)
         if hasattr(self, "linear_corrections_label") and not linear_on:
             self.linear_corrections_label.setVisible(False)
             self.linear_wb_checkbox.setVisible(False)
             self.linear_flatfield_checkbox.setVisible(False)
             self.linear_sensor_checkbox.setVisible(False)
+            self.linear_ice_checkbox.setVisible(False)
             self.linear_corrections_hint.setVisible(False)
         if hasattr(self, "_presets_section"):
             self._presets_section.setVisible(not linear_on)
@@ -672,7 +699,11 @@ class ExportSidebar(BaseSidebar):
         "pakon": [("4× (default)", None), ("2×", 2.0), ("Off", 1.0)],
         "pakon_f335": [("Off (default)", None), ("2×", 2.0), ("4×", 4.0)],
         "dng": [("Off (default)", None), ("2×", 2.0), ("4×", 4.0)],
+        "nef": [],
+        "fff": [],
+        "noritsu": [("16× (default)", None), ("8×", 8.0), ("Off", 1.0)],
         "camera": [],
+        "tiff": [("Off (default)", None), ("2×", 2.0), ("4×", 4.0)],
         "unsupported": [],
     }
 
@@ -703,11 +734,25 @@ class ExportSidebar(BaseSidebar):
         combo.blockSignals(False)
         self._current_expansion_source_type = source_type
 
+        needs_gamma = source_type in ("tiff", "nef")
+        self.linear_gamma_row.setVisible(needs_gamma)
+        self.linear_gamma_hint.setVisible(needs_gamma)
+        if needs_gamma:
+            self._refresh_linear_gamma_combo()
+
         is_camera = source_type == "camera"
-        self.linear_corrections_label.setVisible(is_camera)
+        has_ir = self.state.has_ir
+        show_corrections = is_camera or has_ir
+        self.linear_corrections_label.setVisible(show_corrections)
         self.linear_wb_checkbox.setVisible(is_camera)
         self.linear_flatfield_checkbox.setVisible(is_camera)
         self.linear_sensor_checkbox.setVisible(is_camera)
+        self.linear_ice_checkbox.setVisible(has_ir)
+        self.linear_ice_checkbox.setEnabled(has_ir)
+        if not has_ir:
+            self.linear_ice_checkbox.setToolTip("Source has no IR channel")
+        else:
+            self.linear_ice_checkbox.setToolTip("Apply IR-based dust and scratch correction")
 
         has_flatfield = bool(self.state.config.flatfield.apply and self.state.config.flatfield.profile_id)
         self.linear_flatfield_checkbox.setEnabled(has_flatfield)
@@ -727,8 +772,9 @@ class ExportSidebar(BaseSidebar):
             self.state.linear_apply_wb
             or (self.state.linear_apply_flatfield and has_flatfield)
             or (self.state.linear_apply_sensor and has_matrix)
+            or (self.state.linear_apply_ice and has_ir)
         )
-        self.linear_corrections_hint.setVisible(is_camera and any_on)
+        self.linear_corrections_hint.setVisible(show_corrections and any_on)
 
     def _on_linear_expansion_changed(self, index: int) -> None:
         source_type = getattr(self, "_current_expansion_source_type", "unsupported")
@@ -736,12 +782,39 @@ class ExportSidebar(BaseSidebar):
         if 0 <= index < len(options):
             self.state.linear_expansion = options[index][1]
 
+    def _refresh_linear_gamma_combo(self) -> None:
+        from negpy.services.export.linear_output import TIFF_GAMMA_OPTIONS
+
+        combo = self.linear_gamma_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for key, label in TIFF_GAMMA_OPTIONS:
+            combo.addItem(label, key)
+        current = self.state.linear_gamma_key
+        for i, (key, _label) in enumerate(TIFF_GAMMA_OPTIONS):
+            if key == current:
+                combo.setCurrentIndex(i)
+                break
+        else:
+            combo.setCurrentIndex(0)
+        combo.blockSignals(False)
+
+    def _on_linear_gamma_changed(self, index: int) -> None:
+        from negpy.services.export.linear_output import TIFF_GAMMA_OPTIONS
+
+        if 0 <= index < len(TIFF_GAMMA_OPTIONS):
+            self.state.linear_gamma_key = TIFF_GAMMA_OPTIONS[index][0]
+            self.controller.session.save_flat_output_prefs()
+
     def _on_linear_correction_changed(self, _checked: bool) -> None:
         self.state.linear_apply_wb = self.linear_wb_checkbox.isChecked()
         self.state.linear_apply_flatfield = self.linear_flatfield_checkbox.isChecked()
         self.state.linear_apply_sensor = self.linear_sensor_checkbox.isChecked()
+        self.state.linear_apply_ice = self.linear_ice_checkbox.isChecked()
         self.controller.session.save_flat_output_prefs()
-        any_on = self.state.linear_apply_wb or self.state.linear_apply_flatfield or self.state.linear_apply_sensor
+        any_on = (
+            self.state.linear_apply_wb or self.state.linear_apply_flatfield or self.state.linear_apply_sensor or self.state.linear_apply_ice
+        )
         self.linear_corrections_hint.setVisible(any_on)
 
     def _on_flat_peek_changed(self, active: bool) -> None:
@@ -1179,6 +1252,8 @@ class ExportSidebar(BaseSidebar):
             self.linear_wb_checkbox.setChecked(self.state.linear_apply_wb)
             self.linear_flatfield_checkbox.setChecked(self.state.linear_apply_flatfield)
             self.linear_sensor_checkbox.setChecked(self.state.linear_apply_sensor)
+            self.linear_ice_checkbox.setChecked(self.state.linear_apply_ice)
+            self._refresh_linear_gamma_combo()
         finally:
             self.block_signals(False)
 
@@ -1205,6 +1280,8 @@ class ExportSidebar(BaseSidebar):
             self.linear_wb_checkbox,
             self.linear_flatfield_checkbox,
             self.linear_sensor_checkbox,
+            self.linear_ice_checkbox,
+            self.linear_gamma_combo,
         ]
         for w in widgets:
             w.blockSignals(blocked)

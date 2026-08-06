@@ -12,7 +12,11 @@ from negpy.features.geometry.models import GeometryConfig
 from negpy.features.rgbscan.models import RgbScanConfig
 from negpy.features.stitch.models import StitchConfig
 from negpy.kernel.image.logic import apply_exif_orientation
+from negpy.infrastructure.loaders.fff_loader import is_flextight_fff
+from negpy.infrastructure.loaders.nef_loader import is_coolscan_nef
+from negpy.infrastructure.loaders.noritsu_loader import is_noritsu_raw, KNOWN_NORITSU_DIMS, KNOWN_NORITSU_HEIGHTS, detect_noritsu_dims
 from negpy.services.export.linear_output import (
+    TIFF_GAMMA_OPTIONS,
     _CameraWB,
     _SourceMeta,
     _apply_white_balance,
@@ -20,6 +24,8 @@ from negpy.services.export.linear_output import (
     _default_pakon_expansion,
     _effective_expansion,
     _is_camera_raw,
+    _is_tiff,
+    _linearize,
     _normalize_wb_rgb,
     _source_format_label,
     _write_tiff,
@@ -76,11 +82,11 @@ class TestIsLinearOutputSupported:
         path = _make_pakon_raw(str(tmp_path))
         assert is_linear_output_supported(path)
 
-    def test_regular_tiff_not_supported(self, tmp_path: str) -> None:
+    def test_regular_tiff_supported(self, tmp_path: str) -> None:
         path = os.path.join(str(tmp_path), "photo.tiff")
         arr = np.zeros((10, 10, 3), dtype=np.uint16)
         tifffile.imwrite(path, arr)
-        assert not is_linear_output_supported(path)
+        assert is_linear_output_supported(path)
 
     def test_nonexistent_raw_supported_by_extension(self) -> None:
         """A .raw extension is in SUPPORTED_RAW_EXTENSIONS; support is a format check."""
@@ -152,8 +158,9 @@ class TestExportLinearOutput:
         np.testing.assert_allclose(actual_u16.astype(np.int32), expected_u16.astype(np.int32), atol=1)
 
     def test_rejects_unsupported_file(self, tmp_path: str) -> None:
-        path = os.path.join(str(tmp_path), "photo.tiff")
-        tifffile.imwrite(path, np.zeros((10, 10, 3), dtype=np.uint16))
+        path = os.path.join(str(tmp_path), "photo.jpeg")
+        with open(path, "wb") as fh:
+            fh.write(b"\xff\xd8\xff\xe0")
         out = os.path.join(str(tmp_path), "out.tiff")
         with pytest.raises(ValueError, match="not supported"):
             export_linear_output(path, out)
@@ -1055,3 +1062,740 @@ class TestLinearCorrections:
         with tifffile.TiffFile(out) as tf:
             desc = tf.pages[0].description
             assert "corrections:" not in desc
+
+    def test_description_includes_gamma_linearization(self, tmp_path: str) -> None:
+        f32 = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        out = os.path.join(str(tmp_path), "out.tiff")
+        _write_tiff(f32, out, "test.tif", gamma_key="2.2")
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "linearized from Gamma 2.2" in desc
+
+    def test_description_no_gamma_for_linear(self, tmp_path: str) -> None:
+        f32 = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        out = os.path.join(str(tmp_path), "out.tiff")
+        _write_tiff(f32, out, "test.tif", gamma_key="linear")
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "linearized" not in desc
+
+
+class TestTiffLinearOutput:
+    def test_is_tiff_extensions(self) -> None:
+        assert _is_tiff("scan.tif")
+        assert _is_tiff("scan.tiff")
+        assert _is_tiff("scan.TIF")
+        assert not _is_tiff("scan.dng")
+        assert not _is_tiff("scan.nef")
+
+    def test_linearize_identity(self) -> None:
+        data = np.array([0.0, 0.25, 0.5, 0.75, 1.0], dtype=np.float32)
+        result = _linearize(data, "linear")
+        np.testing.assert_array_equal(result, data)
+
+    def test_linearize_gamma_22(self) -> None:
+        data = np.array([0.0, 0.5, 1.0], dtype=np.float32)
+        result = _linearize(data, "2.2")
+        np.testing.assert_allclose(result[0], 0.0, atol=1e-7)
+        np.testing.assert_allclose(result[1], 0.5**2.2, rtol=1e-5)
+        np.testing.assert_allclose(result[2], 1.0, atol=1e-7)
+
+    def test_linearize_srgb(self) -> None:
+        result = _linearize(np.array([0.0, 0.04045, 0.5, 1.0], dtype=np.float32), "srgb")
+        np.testing.assert_allclose(result[0], 0.0, atol=1e-7)
+        np.testing.assert_allclose(result[1], 0.04045 / 12.92, rtol=1e-5)
+        np.testing.assert_allclose(result[3], 1.0, atol=1e-7)
+
+    def test_linearize_lstar(self) -> None:
+        result = _linearize(np.array([0.0, 1.0], dtype=np.float32), "lstar")
+        np.testing.assert_allclose(result[0], 0.0, atol=1e-7)
+        np.testing.assert_allclose(result[1], 1.0, atol=1e-7)
+
+    def test_linearize_rec709(self) -> None:
+        result = _linearize(np.array([0.0, 0.081, 1.0], dtype=np.float32), "rec709")
+        np.testing.assert_allclose(result[0], 0.0, atol=1e-7)
+        np.testing.assert_allclose(result[1], 0.081 / 4.5, rtol=1e-5)
+        np.testing.assert_allclose(result[2], 1.0, atol=1e-7)
+
+    def test_linearize_clamps_input(self) -> None:
+        data = np.array([-0.1, 1.5], dtype=np.float32)
+        result = _linearize(data, "2.2")
+        assert result[0] >= 0.0
+        assert result[1] <= 1.0
+
+    def test_linearize_all_gamma_options_have_keys(self) -> None:
+        keys = [k for k, _ in TIFF_GAMMA_OPTIONS]
+        data = np.array([0.5], dtype=np.float32)
+        for key in keys:
+            result = _linearize(data, key)
+            assert result.shape == data.shape
+
+    def test_source_type_tiff(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "scan.tif")
+        tifffile.imwrite(path, np.zeros((4, 4, 3), dtype=np.uint16))
+        assert linear_output_source_type(path) == "tiff"
+
+    def test_tiff_supported(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "scan.tif")
+        tifffile.imwrite(path, np.zeros((4, 4, 3), dtype=np.uint16))
+        assert is_linear_output_supported(path)
+
+    def test_source_format_label_tiff(self) -> None:
+        assert _source_format_label("scan.tif") == "TIFF"
+        assert _source_format_label("scan.tiff") == "TIFF"
+
+    def test_decode_tiff_rgb(self, tmp_path: str) -> None:
+        from negpy.services.export.linear_output import _decode_tiff
+
+        rng = np.random.RandomState(42)
+        data = rng.randint(0, 65535, size=(10, 10, 3), dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "rgb.tif")
+        tifffile.imwrite(path, data)
+        rgb, ir = _decode_tiff(path)
+        assert rgb.shape == (10, 10, 3)
+        assert rgb.dtype == np.float32
+        assert ir is None
+
+    def test_decode_tiff_4ch_splits_ir(self, tmp_path: str) -> None:
+        from negpy.services.export.linear_output import _decode_tiff
+
+        data = np.ones((8, 8, 4), dtype=np.uint16) * 32768
+        path = os.path.join(str(tmp_path), "4ch.tif")
+        tifffile.imwrite(path, data, extrasamples=[0])
+        rgb, ir = _decode_tiff(path)
+        assert rgb.shape == (8, 8, 3)
+        assert ir is not None
+        assert ir.shape[:2] == (8, 8)
+
+    def test_decode_tiff_4ch_alpha_not_ir(self, tmp_path: str) -> None:
+        from negpy.services.export.linear_output import _decode_tiff
+
+        data = np.ones((8, 8, 4), dtype=np.uint16) * 32768
+        path = os.path.join(str(tmp_path), "4ch_alpha.tif")
+        tifffile.imwrite(path, data, extrasamples=[2])
+        rgb, ir = _decode_tiff(path)
+        assert rgb.shape == (8, 8, 3)
+        assert ir is None
+
+    def test_decode_tiff_applies_gamma(self, tmp_path: str) -> None:
+        from negpy.services.export.linear_output import _decode_tiff
+
+        data = np.full((4, 4, 3), 32768, dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "gamma.tif")
+        tifffile.imwrite(path, data)
+        rgb_lin, _ = _decode_tiff(path, gamma_key="linear")
+        rgb_22, _ = _decode_tiff(path, gamma_key="2.2")
+        assert np.all(rgb_22 < rgb_lin)
+
+    def test_export_tiff_with_gamma(self, tmp_path: str) -> None:
+        data = np.full((4, 4, 3), 32768, dtype=np.uint16)
+        src = os.path.join(str(tmp_path), "input.tif")
+        tifffile.imwrite(src, data)
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(src, out, gamma_key="2.2")
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "linearized from Gamma 2.2" in desc
+            assert "source: TIFF" in desc
+
+    def test_decode_tiff_with_expansion(self, tmp_path: str) -> None:
+        from negpy.services.export.linear_output import _decode_tiff
+
+        data = np.full((4, 4, 3), 16384, dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "dim.tif")
+        tifffile.imwrite(path, data)
+        rgb_no_exp, _ = _decode_tiff(path)
+        rgb_2x, _ = _decode_tiff(path, expansion=2.0)
+        np.testing.assert_allclose(rgb_2x, np.clip(rgb_no_exp * 2.0, 0.0, 1.0), atol=1e-6)
+
+    def test_export_tiff_with_expansion(self, tmp_path: str) -> None:
+        data = np.full((4, 4, 3), 16384, dtype=np.uint16)
+        src = os.path.join(str(tmp_path), "input.tif")
+        tifffile.imwrite(src, data)
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(src, out, expansion=2.0)
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "expansion: x2" in desc
+
+    def test_tiff_output_has_no_icc_profile(self, tmp_path: str) -> None:
+        data = np.full((4, 4, 3), 32768, dtype=np.uint16)
+        src = os.path.join(str(tmp_path), "input.tif")
+        tifffile.imwrite(src, data)
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(src, out)
+        with tifffile.TiffFile(out) as tf:
+            tag_codes = [t.code for t in tf.pages[0].tags.values()]
+            assert 34675 not in tag_codes  # no ICC profile
+            assert 34665 not in tag_codes  # no EXIF IFD
+
+    def test_tiff_output_keeps_make_model(self, tmp_path: str) -> None:
+        f32 = np.full((4, 4, 3), 0.5, dtype=np.float32)
+        meta = _SourceMeta(make="Nikon", model="CoolScan 5000")
+        out = os.path.join(str(tmp_path), "out.tiff")
+        _write_tiff(f32, out, "test.tif", source_meta=meta)
+        with tifffile.TiffFile(out) as tf:
+            tags = {t.code: t.value for t in tf.pages[0].tags.values()}
+            assert tags.get(271) == "Nikon"
+            assert tags.get(272) == "CoolScan 5000"
+
+
+def _make_coolscan_nef(tmp_dir: str, h: int = 200, w: int = 300, channels: int = 3) -> str:
+    """Create a synthetic Coolscan-style NEF: thumbnail in IFD0, full-res RGB in SubIFD."""
+    thumb = np.zeros((50, 75, 3), dtype=np.uint8)
+    rng = np.random.RandomState(42)
+    fullres = rng.randint(0, 65535, (h, w, channels), dtype=np.uint16)
+    path = os.path.join(tmp_dir, "coolscan.nef")
+    with tifffile.TiffWriter(path) as tw:
+        tw.write(thumb, photometric="rgb", subifds=1)
+        tw.write(fullres, photometric="rgb")
+    return path
+
+
+def _make_camera_nef(tmp_dir: str) -> str:
+    """Create a synthetic camera-style NEF: single-channel Bayer, no RGB SubIFD."""
+    bayer = np.zeros((200, 300), dtype=np.uint16)
+    path = os.path.join(tmp_dir, "camera.nef")
+    with tifffile.TiffWriter(path) as tw:
+        tw.write(bayer, photometric="minisblack")
+    return path
+
+
+def _make_camera_nef_with_preview(tmp_dir: str) -> str:
+    """Camera NEF with both a Bayer SubIFD and an RGB preview SubIFD.
+
+    Real Nikon cameras routinely embed a full-res RGB preview alongside
+    the CFA data. This must NOT match the scanner detector.
+    """
+    thumb = np.zeros((50, 75, 3), dtype=np.uint8)
+    bayer = np.zeros((4000, 6000), dtype=np.uint16)
+    preview = np.zeros((4000, 6000, 3), dtype=np.uint8)
+    path = os.path.join(tmp_dir, "camera_preview.nef")
+    with tifffile.TiffWriter(path) as tw:
+        tw.write(thumb, photometric="rgb", subifds=2)
+        tw.write(bayer, photometric="minisblack")
+        tw.write(preview, photometric="rgb")
+    return path
+
+
+class TestCoolscanNef:
+    def test_detect_coolscan_nef(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        assert is_coolscan_nef(path)
+
+    def test_camera_nef_not_detected(self, tmp_path: str) -> None:
+        path = _make_camera_nef(str(tmp_path))
+        assert not is_coolscan_nef(path)
+
+    def test_camera_nef_with_preview_not_detected(self, tmp_path: str) -> None:
+        """Camera NEF with RGB preview SubIFD alongside Bayer data must not match."""
+        path = _make_camera_nef_with_preview(str(tmp_path))
+        assert not is_coolscan_nef(path)
+
+    def test_camera_nef_with_preview_is_camera_raw(self, tmp_path: str) -> None:
+        path = _make_camera_nef_with_preview(str(tmp_path))
+        assert _is_camera_raw(path)
+
+    def test_non_nef_not_detected(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "photo.tiff")
+        tifffile.imwrite(path, np.zeros((10, 10, 3), dtype=np.uint16))
+        assert not is_coolscan_nef(path)
+
+    def test_coolscan_nef_not_camera_raw(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        assert not _is_camera_raw(path)
+
+    def test_camera_nef_is_camera_raw(self, tmp_path: str) -> None:
+        path = _make_camera_nef(str(tmp_path))
+        assert _is_camera_raw(path)
+
+    def test_linear_output_supported(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        assert is_linear_output_supported(path)
+
+    def test_source_type_nef(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        assert linear_output_source_type(path) == "nef"
+
+    def test_source_format_label(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        assert _source_format_label(path) == "Coolscan NEF"
+
+    def test_no_expansion(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        assert _effective_expansion(path, None) == 1.0
+        assert _effective_expansion(path, 4.0) == 1.0
+
+    def test_export_roundtrip(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path))
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out)
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.dtype == np.uint16
+            assert arr.shape == (200, 300, 3)
+            desc = tf.pages[0].description
+            assert "Coolscan NEF" in desc
+            assert "no scaling" in desc
+
+    def test_export_4ch_drops_extra_channel(self, tmp_path: str) -> None:
+        path = _make_coolscan_nef(str(tmp_path), channels=4)
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out)
+        ir_path = os.path.join(str(tmp_path), "output_ir.tiff")
+        assert not os.path.exists(ir_path)
+        with tifffile.TiffFile(out) as tf:
+            assert tf.pages[0].asarray().shape == (200, 300, 3)
+
+    def test_loader_returns_float32(self, tmp_path: str) -> None:
+        from negpy.infrastructure.loaders.nef_loader import NefLoader
+
+        path = _make_coolscan_nef(str(tmp_path))
+        loader = NefLoader()
+        wrapper, metadata = loader.load(path)
+        with wrapper as w:
+            assert w.data.dtype == np.float32
+            assert w.data.shape == (200, 300, 3)
+            assert w.data.min() >= 0.0
+            assert w.data.max() <= 1.0
+        assert "orientation" in metadata
+
+    def test_loader_drops_extra_channel(self, tmp_path: str) -> None:
+        from negpy.infrastructure.loaders.nef_loader import NefLoader
+
+        path = _make_coolscan_nef(str(tmp_path), channels=4)
+        loader = NefLoader()
+        wrapper, metadata = loader.load(path)
+        with wrapper as w:
+            assert w.data.shape == (200, 300, 3)
+        assert metadata.get("ir") is None
+
+
+def _make_flextight_fff(tmp_dir: str, h: int = 400, w: int = 600, channels: int = 3) -> str:
+    """Create a synthetic Flextight FFF: big-endian TIFF, full-res RGB in IFD0, small preview in IFD1."""
+    rng = np.random.RandomState(42)
+    fullres = rng.randint(0, 65535, (h, w, channels), dtype=np.uint16)
+    preview = np.zeros((50, 75, 3), dtype=np.uint8)
+    path = os.path.join(tmp_dir, "scan.fff")
+    with tifffile.TiffWriter(path, byteorder=">") as tw:
+        tw.write(fullres, photometric="rgb")
+        tw.write(preview, photometric="rgb")
+    return path
+
+
+class TestFlextightFff:
+    def test_detect_flextight_fff(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        assert is_flextight_fff(path)
+
+    def test_non_fff_not_detected(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "photo.tiff")
+        tifffile.imwrite(path, np.zeros((10, 10, 3), dtype=np.uint16))
+        assert not is_flextight_fff(path)
+
+    def test_fff_not_camera_raw(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        assert not _is_camera_raw(path)
+
+    def test_linear_output_supported(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        assert is_linear_output_supported(path)
+
+    def test_source_type_fff(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        assert linear_output_source_type(path) == "fff"
+
+    def test_source_format_label(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        assert _source_format_label(path) == "Flextight FFF"
+
+    def test_no_expansion(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        assert _effective_expansion(path, None) == 1.0
+        assert _effective_expansion(path, 4.0) == 1.0
+
+    def test_export_roundtrip(self, tmp_path: str) -> None:
+        path = _make_flextight_fff(str(tmp_path))
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out)
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.dtype == np.uint16
+            assert arr.shape == (400, 600, 3)
+            desc = tf.pages[0].description
+            assert "Flextight FFF" in desc
+            assert "no scaling" in desc
+
+    def test_picks_largest_ifd(self, tmp_path: str) -> None:
+        """When multiple IFDs exist, the largest by pixel count is used."""
+        rng = np.random.RandomState(42)
+        fullres = rng.randint(0, 65535, (500, 750, 3), dtype=np.uint16)
+        small = np.zeros((50, 75, 3), dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "multi.fff")
+        with tifffile.TiffWriter(path, byteorder=">") as tw:
+            tw.write(fullres, photometric="rgb")
+            tw.write(small, photometric="rgb")
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out)
+        with tifffile.TiffFile(out) as tf:
+            assert tf.pages[0].asarray().shape == (500, 750, 3)
+
+    def test_loader_returns_float32(self, tmp_path: str) -> None:
+        from negpy.infrastructure.loaders.fff_loader import FffLoader
+
+        path = _make_flextight_fff(str(tmp_path))
+        loader = FffLoader()
+        wrapper, metadata = loader.load(path)
+        with wrapper as w:
+            assert w.data.dtype == np.float32
+            assert w.data.shape == (400, 600, 3)
+            assert w.data.min() >= 0.0
+            assert w.data.max() <= 1.0
+        assert "orientation" in metadata
+
+
+def _make_logluv_fff(tmp_dir: str, h: int = 4, w: int = 6) -> str:
+    """Create a synthetic SGI LogLuv32 FFF file (minimal hand-built TIFF)."""
+    import struct
+
+    from negpy.infrastructure.loaders.logluv import (
+        COMPRESSION_SGILOG,
+    )
+
+    UVSCALE = 410.0
+    U_NEU = 0.210526316
+    V_NEU = 0.473684211
+    PHOTOMETRIC_LOGLUV = 32845
+
+    rng = np.random.RandomState(123)
+    luminance = rng.uniform(0.01, 1.0, (h, w))
+
+    def logl16_from_y(y):
+        le = np.floor(256.0 * (np.log2(np.abs(y)) + 64.0)).astype(np.int64)
+        le = np.clip(le, 0, 0x7FFF)
+        le = np.where(y <= 0, 0, le)
+        return le.astype(np.uint32)
+
+    le = logl16_from_y(luminance)
+    ue = np.clip(np.trunc(UVSCALE * U_NEU), 0, 255).astype(np.uint32)
+    ve = np.clip(np.trunc(UVSCALE * V_NEU), 0, 255).astype(np.uint32)
+    packed = (le << 16) | (ue << 8) | ve
+
+    pixel_bytes = packed.astype(">u4").tobytes()
+
+    byte_order = b"MM"
+    ifd_offset = 8
+    n_tags = 8
+    ifd_size = 2 + n_tags * 12 + 4
+    strip_offset = ifd_offset + ifd_size
+
+    ifd = struct.pack(">H", n_tags)
+
+    def tag(t, typ, cnt, val):
+        if typ == 3:
+            return struct.pack(">HHIH2x", t, typ, cnt, val)
+        return struct.pack(">HHII", t, typ, cnt, val)
+
+    ifd += tag(256, 4, 1, w)  # ImageWidth
+    ifd += tag(257, 4, 1, h)  # ImageLength
+    ifd += tag(258, 3, 1, 32)  # BitsPerSample
+    ifd += tag(259, 3, 1, COMPRESSION_SGILOG)  # Compression
+    ifd += tag(262, 3, 1, PHOTOMETRIC_LOGLUV)  # PhotometricInterpretation
+    ifd += tag(273, 4, 1, strip_offset)  # StripOffsets
+    ifd += tag(277, 3, 1, 3)  # SamplesPerPixel
+    ifd += tag(278, 4, 1, h)  # RowsPerStrip
+    ifd += struct.pack(">I", 0)  # next IFD
+
+    header = byte_order + struct.pack(">HI", 42, ifd_offset)
+
+    # StripByteCounts: we omit it — the decoder should handle this
+    # Actually we need it. Rebuild with 9 tags.
+    n_tags = 9
+    ifd_size = 2 + n_tags * 12 + 4
+    strip_offset = ifd_offset + ifd_size
+
+    ifd = struct.pack(">H", n_tags)
+    ifd += tag(256, 4, 1, w)
+    ifd += tag(257, 4, 1, h)
+    ifd += tag(258, 3, 1, 32)
+    ifd += tag(259, 3, 1, COMPRESSION_SGILOG)
+    ifd += tag(262, 3, 1, PHOTOMETRIC_LOGLUV)
+    ifd += tag(273, 4, 1, strip_offset)
+    ifd += tag(277, 3, 1, 3)
+    ifd += tag(278, 4, 1, h)
+    ifd += tag(279, 4, 1, len(pixel_bytes))  # StripByteCounts
+    ifd += struct.pack(">I", 0)
+
+    header = byte_order + struct.pack(">HI", 42, ifd_offset)
+    data = header + ifd + pixel_bytes
+
+    path = os.path.join(tmp_dir, "logluv.fff")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+class TestFlextightLogLuv:
+    def test_detect_logluv_fff(self, tmp_path: str) -> None:
+        path = _make_logluv_fff(str(tmp_path))
+        assert is_flextight_fff(path)
+
+    def test_loader_decodes_logluv(self, tmp_path: str) -> None:
+        from negpy.infrastructure.loaders.fff_loader import FffLoader
+
+        path = _make_logluv_fff(str(tmp_path), h=4, w=6)
+        loader = FffLoader()
+        wrapper, metadata = loader.load(path)
+        with wrapper as w:
+            assert w.data.dtype == np.float32
+            assert w.data.shape == (4, 6, 3)
+            assert w.data.min() >= 0.0
+            assert w.data.max() <= 1.0
+        assert "orientation" in metadata
+
+    def test_logluv_export_roundtrip(self, tmp_path: str) -> None:
+        path = _make_logluv_fff(str(tmp_path), h=10, w=15)
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out)
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.dtype == np.uint16
+            assert arr.shape == (10, 15, 3)
+            desc = tf.pages[0].description
+            assert "Flextight FFF" in desc
+
+    def test_logluv_produces_nonzero_rgb(self, tmp_path: str) -> None:
+        from negpy.infrastructure.loaders.fff_loader import FffLoader
+
+        path = _make_logluv_fff(str(tmp_path), h=4, w=6)
+        loader = FffLoader()
+        wrapper, _meta = loader.load(path)
+        with wrapper as w:
+            assert w.data.mean() > 0.01, "LogLuv decode produced near-zero output"
+
+    def test_logluv_source_type(self, tmp_path: str) -> None:
+        path = _make_logluv_fff(str(tmp_path))
+        assert linear_output_source_type(path) == "fff"
+
+
+def _make_noritsu_raw(tmp_dir: str, w: int = 4042, h: int = 6391) -> str:
+    """Create a synthetic Noritsu RAW file: headerless BGR16 LE, 12-bit data."""
+    rng = np.random.RandomState(42)
+    bgr = rng.randint(0, 4096, size=(h, w, 3), dtype=np.uint16)
+    path = os.path.join(tmp_dir, "FULL000000020000.RAW")
+    bgr.astype("<u2").tofile(path)
+    assert os.path.getsize(path) == w * h * 3 * 2
+    return path
+
+
+def _make_noritsu_raw_small(tmp_dir: str) -> str:
+    """Create a Noritsu RAW with the smallest known dims (3551×4502)."""
+    w, h = 3551, 4502
+    rng = np.random.RandomState(77)
+    bgr = rng.randint(0, 4096, size=(h, w, 3), dtype=np.uint16)
+    path = os.path.join(tmp_dir, "FULL_small.raw")
+    bgr.astype("<u2").tofile(path)
+    return path
+
+
+class TestNoritsuRaw:
+    def test_detect_noritsu_raw(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert is_noritsu_raw(path)
+
+    def test_pakon_not_detected_as_noritsu(self, tmp_path: str) -> None:
+        path = _make_pakon_raw(str(tmp_path))
+        assert not is_noritsu_raw(path)
+
+    def test_unknown_size_not_detected(self, tmp_path: str) -> None:
+        data = np.zeros(12345678, dtype=np.uint8)
+        path = os.path.join(str(tmp_path), "mystery.raw")
+        data.tofile(path)
+        assert not is_noritsu_raw(path)
+
+    def test_non_raw_ext_not_detected(self, tmp_path: str) -> None:
+        path = os.path.join(str(tmp_path), "photo.tiff")
+        tifffile.imwrite(path, np.zeros((10, 10, 3), dtype=np.uint16))
+        assert not is_noritsu_raw(path)
+
+    def test_noritsu_not_camera_raw(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert not _is_camera_raw(path)
+
+    def test_linear_output_supported(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert is_linear_output_supported(path)
+
+    def test_source_type_noritsu(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert linear_output_source_type(path) == "noritsu"
+
+    def test_source_format_label(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert _source_format_label(path) == "Noritsu RAW"
+
+    def test_default_expansion(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert _effective_expansion(path, None) == 16.0
+
+    def test_custom_expansion(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        assert _effective_expansion(path, 8.0) == 8.0
+
+    def test_export_roundtrip(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out)
+        with tifffile.TiffFile(out) as tf:
+            arr = tf.pages[0].asarray()
+            assert arr.dtype == np.uint16
+            assert arr.shape == (6391, 4042, 3)
+            desc = tf.pages[0].description
+            assert "Noritsu RAW" in desc
+            assert "expansion: x16" in desc
+
+    def test_export_custom_expansion(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw(str(tmp_path))
+        out = os.path.join(str(tmp_path), "output.tiff")
+        export_linear_output(path, out, expansion=8.0)
+        with tifffile.TiffFile(out) as tf:
+            desc = tf.pages[0].description
+            assert "expansion: x8" in desc
+
+    def test_bgr_to_rgb_swap(self, tmp_path: str) -> None:
+        """Verify the loader performs BGR to RGB channel swap."""
+        w, h = 4042, 6391
+        bgr = np.zeros((h, w, 3), dtype=np.uint16)
+        bgr[:, :, 0] = 100  # B channel
+        bgr[:, :, 1] = 200  # G channel
+        bgr[:, :, 2] = 300  # R channel
+        path = os.path.join(str(tmp_path), "swap_test.raw")
+        bgr.astype("<u2").tofile(path)
+
+        from negpy.infrastructure.loaders.noritsu_loader import NoritsuLoader
+
+        loader = NoritsuLoader()
+        wrapper, metadata = loader.load(path)
+        with wrapper as w_obj:
+            f32 = w_obj.data
+            r_val = f32[0, 0, 0]
+            g_val = f32[0, 0, 1]
+            b_val = f32[0, 0, 2]
+            assert r_val > g_val > b_val
+
+    def test_loader_returns_float32(self, tmp_path: str) -> None:
+        from negpy.infrastructure.loaders.noritsu_loader import NoritsuLoader
+
+        path = _make_noritsu_raw(str(tmp_path))
+        loader = NoritsuLoader()
+        wrapper, metadata = loader.load(path)
+        with wrapper as w:
+            assert w.data.dtype == np.float32
+            assert w.data.shape == (6391, 4042, 3)
+            assert w.data.min() >= 0.0
+            assert w.data.max() <= 1.0
+        assert metadata["orientation"] == 0
+        assert metadata["ir"] is None
+
+    def test_all_known_dims_unique_sizes(self) -> None:
+        """Every known dimension pair must produce a unique file size."""
+        sizes = [w * h * 6 for w, h in KNOWN_NORITSU_DIMS]
+        assert len(sizes) == len(set(sizes))
+
+    def test_small_dims_detected(self, tmp_path: str) -> None:
+        path = _make_noritsu_raw_small(str(tmp_path))
+        assert is_noritsu_raw(path)
+
+    def test_novel_width_known_height_detected(self, tmp_path: str) -> None:
+        """Tier 2: a new width (not in the table) under a known height resolves."""
+        novel_w, h = 5555, 5028
+        assert (novel_w, h) not in KNOWN_NORITSU_DIMS
+        rng = np.random.RandomState(99)
+        bgr = rng.randint(0, 4096, size=(h, novel_w, 3), dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "novel.raw")
+        bgr.astype("<u2").tofile(path)
+        dims = detect_noritsu_dims(path)
+        assert dims == (novel_w, h)
+        assert is_noritsu_raw(path)
+
+    def test_ambiguous_heights_not_detected(self, tmp_path: str) -> None:
+        """If a file size divides evenly by multiple known heights, reject it."""
+        from math import lcm
+
+        common = lcm(KNOWN_NORITSU_HEIGHTS[0], KNOWN_NORITSU_HEIGHTS[1])
+        size = common * 6
+        data = np.zeros(size, dtype=np.uint8)
+        path = os.path.join(str(tmp_path), "ambiguous.raw")
+        data.tofile(path)
+        assert detect_noritsu_dims(path) is None
+        assert not is_noritsu_raw(path)
+
+    def test_tier3_novel_height_detected(self, tmp_path: str) -> None:
+        """Tier 3: a file whose dimensions match no known height but has
+        exactly one film-plausible divisor pair resolves.
+
+        4001 is prime, so 4001×4001 is the only (w,h) where both are in
+        the scan-width range — the open divisor search finds it uniquely.
+        """
+        w, h = 4001, 4001
+        assert h not in KNOWN_NORITSU_HEIGHTS
+        assert (w, h) not in KNOWN_NORITSU_DIMS
+        data = np.zeros(w * h * 3, dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "tier3.raw")
+        data.astype("<u2").tofile(path)
+        dims = detect_noritsu_dims(path)
+        assert dims == (w, h)
+
+    def test_tier3_ambiguous_rejected(self, tmp_path: str) -> None:
+        """Tier 3: if multiple film-plausible divisor pairs exist, reject."""
+        w, h = 4000, 6000
+        assert h not in KNOWN_NORITSU_HEIGHTS
+        data = np.zeros(w * h * 3, dtype=np.uint16)
+        path = os.path.join(str(tmp_path), "ambiguous_t3.raw")
+        data.astype("<u2").tofile(path)
+        assert detect_noritsu_dims(path) is None
+
+    def test_pakon_noritsu_tier1_sizes_disjoint(self) -> None:
+        """No known Noritsu dimension pair produces a file size within Pakon's tolerance."""
+        from negpy.infrastructure.loaders.pakon_loader import PakonLoader
+
+        for w, h in KNOWN_NORITSU_DIMS:
+            noritsu_size = w * h * 6
+            for spec in PakonLoader.PAKON_SPECS:
+                assert abs(noritsu_size - spec["size"]) >= 1024, (
+                    f"Noritsu {w}x{h} ({noritsu_size}) collides with Pakon {spec['desc']} ({spec['size']})"
+                )
+
+    def test_pakon_noritsu_tier2_no_collision_above_min_scan_width(self) -> None:
+        """No Noritsu tier-2 file at a real scan width lands in Pakon's tolerance.
+
+        The narrowest known Noritsu scan width is 3551. Checks every known height
+        x every width from 3000-15000 (generous margin below the minimum).
+        Widths below 3000 are implausible for any real film scan.
+        """
+        from negpy.infrastructure.loaders.pakon_loader import PakonLoader
+
+        min_scan_width = 3000
+        collisions: list[str] = []
+        for h in KNOWN_NORITSU_HEIGHTS:
+            for w in range(min_scan_width, 15001):
+                noritsu_size = w * h * 6
+                for spec in PakonLoader.PAKON_SPECS:
+                    if abs(noritsu_size - spec["size"]) < 1024:
+                        collisions.append(f"{w}x{h} ({noritsu_size}) vs Pakon {spec['desc']} ({spec['size']})")
+        assert not collisions, f"Collisions at real scan widths: {collisions}"
+
+    def test_pakon_noritsu_theoretical_collision_documented(self) -> None:
+        """Document the known theoretical collision at width 1777 (not a real scan width).
+
+        Height 4502, width 1777 produces 48,000,324 bytes — within Pakon's
+        48M ± 1024 window. This is harmless because: (a) 1777 is far below
+        any real Noritsu scan width (min known: 3551), and (b) Pakon checks
+        first in the factory, so this size would be claimed as Pakon.
+        """
+        from negpy.infrastructure.loaders.pakon_loader import PakonLoader
+
+        collision_size = 1777 * 4502 * 6
+        pakon_48m = next(s for s in PakonLoader.PAKON_SPECS if s["size"] == 48000000)
+        assert abs(collision_size - pakon_48m["size"]) < 1024
+        assert 1777 < 3000  # well below any real scan width
