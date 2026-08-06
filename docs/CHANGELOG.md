@@ -3,7 +3,7 @@
 ## 0.48.0
 
 - Change: **Calibration section** — the sensor unmix, the crosstalk matrix and Hue Trim now sit together, out of Process, since all three correct the capture rather than the negative-to-positive conversion. Crosstalk is reframed as a property of a whole scanning setup rather than of a film stock; the bundled matrices are marked "(approx)" and grouped by provenance, and "Default" is now "Generic C41".
-- New: **Hue Trim** — a ±30° rotation of the print's colours about the neutral axis, for a narrowband or odd-phosphor light that rotates hues instead of casting them, where white balance has no grey to correct. Sticky across frames, since the light is a rig property.
+- New: **Hue Trim** — a ±30° rotation of the print's colours about the neutral axis, for a narrowband-ish or odd-phosphor light that rotates hues instead of casting them, where white balance has no grey to correct. Sticky across frames, since the light is a rig property.
 - New: **Scanner formats as Linear Output sources** — Coolscan NEF, Flextight FFF (including LogLuv-encoded), Noritsu RAW and generic TIFF, the last with an Input gamma selector for files whose encoding is tagged wrong. @thetalkingdrum
 - New: **Composites and correction toggles in Linear Output** — RGB-scan triplets merge into one TIFF and stitch composites assemble per part; optional WB, flat-field and sensor-correction checkboxes bake those into camera RAW exports, all off by default. @thetalkingdrum
 - New: **IR dust removal in Linear Output** — bakes the frame's IR correction (NegPy or OpenICE) into the written file; shown only when the source carries an IR channel. @thetalkingdrum
