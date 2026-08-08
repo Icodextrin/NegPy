@@ -1,6 +1,7 @@
 import sys
 from typing import Any, Dict
 
+import numpy as np
 import qtawesome as qta
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtWidgets import (
@@ -353,7 +354,12 @@ class RightPanel(QWidget):
         if source is None:
             source = metrics.get("analysis_buffer")
         if source is None:
-            source = metrics.get("base_positive")
+            # A GPU texture cannot be binned here without a full readback on the UI
+            # thread, so keep the last histogram rather than blanking the chart.
+            candidate = metrics.get("base_positive")
+            source = candidate if isinstance(candidate, np.ndarray) else None
+        if source is None:
+            return
         bins = output_histogram(source)
 
         self.curve_widget.set_output_histogram(bins)
@@ -374,6 +380,9 @@ class RightPanel(QWidget):
 
     def _update_analysis(self) -> None:
         metrics = self.controller.session.state.last_metrics
+        # Mid-gesture frames carry no metrics; the settle frame refreshes all of this.
+        if metrics.get("interactive"):
+            return
 
         self._update_histograms(metrics)
         # Measured zones read through the current config, so they track every render.
@@ -426,6 +435,6 @@ class RightPanel(QWidget):
         from negpy.features.exposure.logic import print_curve, print_curve_output
 
         enc = print_curve_output(print_curve(config, slope, pivot, process_mode), wedge_vals())
-        display_cs, monitor_bytes = self.controller.display_transform_params()
+        display_cs, monitor_bytes, proof = self.controller.display_transform_params()
         self.step_wedge.setVisible(True)
-        self.step_wedge.update_data(enc, wedge_step_density(metrics.get("norm_density_range")), display_cs, monitor_bytes)
+        self.step_wedge.update_data(enc, wedge_step_density(metrics.get("norm_density_range")), display_cs, monitor_bytes, proof)

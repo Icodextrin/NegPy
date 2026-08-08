@@ -75,21 +75,6 @@ def _read_screen_icc(screen: object) -> Optional[bytes]:
     return data
 
 
-def _display_buffer_for_canvas(buffer: object) -> object:
-    if isinstance(buffer, GPUTexture):
-        try:
-            readback = buffer.readback()
-        except Exception:
-            logger.exception("Failed to read back GPU preview for canvas display")
-            return buffer
-
-        if isinstance(readback, np.ndarray) and readback.ndim == 3 and readback.shape[2] >= 3:
-            return np.ascontiguousarray(readback[:, :, :3])
-        return readback
-
-    return buffer
-
-
 class _EmptyStateOverlay(QWidget):
     """Shown on top of the canvas when no image is loaded.
 
@@ -427,6 +412,7 @@ class MainWindow(QMainWindow):
         self.controller.image_updated.connect(self._on_image_updated)
         self.controller.preview_loaded.connect(self._refresh_image_info)
         self.controller.loading_started.connect(self._on_loading_started)
+        self.controller.gpu_textures_released.connect(self.canvas.release_gpu_texture)
         self.controller.image_updated.connect(self.loading_overlay.stop)
         self.controller.load_failed.connect(self._on_load_failed)
         self.controller.zoom_changed.connect(self._on_zoom_info_changed)
@@ -541,7 +527,9 @@ class MainWindow(QMainWindow):
             logger.warning("Render completed but 'base_positive' not found in metrics")
             return
 
-        buffer = _display_buffer_for_canvas(metrics["base_positive"])
+        # Passed on as-is: the GPU display path samples the texture and applies the
+        # working→display LUT in its shader.
+        buffer = metrics["base_positive"]
         content_rect = metrics.get("content_rect")
 
         if isinstance(buffer, np.ndarray) and not self.state.gpu_enabled:
@@ -571,8 +559,8 @@ class MainWindow(QMainWindow):
 
         # Shared with the filmstrip thumbnail so the same frame can't render two
         # different colours in the two places (see display_transform_params).
-        display_cs, monitor_bytes = self.controller.display_transform_params(splash=bool(metrics.get("splash")))
-        self.canvas.update_buffer(buffer, display_cs, content_rect=content_rect, monitor_icc_bytes=monitor_bytes)
+        display_cs, monitor_bytes, proof = self.controller.display_transform_params(splash=bool(metrics.get("splash")))
+        self.canvas.update_buffer(buffer, display_cs, content_rect=content_rect, monitor_icc_bytes=monitor_bytes, proof=proof)
 
     def _refresh_image_info(self) -> None:
         """Updates the canvas HUD corner pills."""

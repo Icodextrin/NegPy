@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass, fields, replace
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import cv2
 import numpy as np
 from PyQt6.QtCore import Q_ARG, QMetaObject, QObject, Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QPixmap
@@ -77,7 +78,7 @@ from negpy.features.local.models import LocalAdjustmentsConfig
 from negpy.features.process.models import ProcessConfig, ProcessMode, invalidate_local_bounds, scan_setup_values
 from negpy.services.assets.thumbnails import asset_thumbnail_key
 from negpy.kernel.system.paths import get_resource_path
-from negpy.features.retouch.logic import fallback_source_offset, select_source_offset
+from negpy.features.retouch.logic import downsample_ir, fallback_source_offset, select_source_offset
 from negpy.features.retouch.models import HEAL_SIZE_REF, RetouchConfig
 from negpy.features.toning.models import ToningConfig
 from negpy.infrastructure.display.color_spaces import ColorSpaceRegistry
@@ -106,6 +107,36 @@ class _PendingCaptureImport:
     detect_mode: bool = False
     capture_roll: str = ""
     capture_frame: Optional[int] = None
+
+
+def _interactive_proxy(raw: Optional[Any]) -> Optional[Any]:
+    """Preview-resolution stand-in for an HQ buffer; None when one is not needed.
+
+    Every downstream cost scales with this buffer, so interactive frames render
+    against it rather than the full-resolution original.
+    """
+    if not isinstance(raw, np.ndarray) or raw.ndim < 2:
+        return None
+    long_edge = max(raw.shape[:2])
+    if long_edge <= APP_CONFIG.preview_render_size:
+        return None
+    scale = APP_CONFIG.preview_render_size / float(long_edge)
+    w, h = max(1, round(raw.shape[1] * scale)), max(1, round(raw.shape[0] * scale))
+    return cv2.resize(raw, (w, h), interpolation=cv2.INTER_AREA)
+
+
+def _interactive_ir_proxy(ir: Optional[Any], proxy: Optional[Any]) -> Optional[Any]:
+    """IR plane matched to ``proxy``'s shape, or None when no proxy is in use.
+
+    Not a plain resize: a defect is a *minimum* in IR transmittance, which area
+    averaging removes.
+    """
+    if proxy is None or not isinstance(ir, np.ndarray):
+        return None
+    h, w = proxy.shape[:2]
+    if ir.shape[:2] == (h, w):
+        return ir
+    return downsample_ir(ir, max(h, w), dims=(w, h))
 
 
 def _capture_import_key(path: str) -> str:
@@ -208,6 +239,9 @@ class AppController(QObject):
     metrics_available = pyqtSignal(dict)
     loading_started = pyqtSignal()
     load_failed = pyqtSignal()
+    # Emitted before the GPU engine frees its texture pool; the canvas samples a
+    # pooled texture directly and must drop it first.
+    gpu_textures_released = pyqtSignal()
     export_progress = pyqtSignal(int, int, str)
     export_finished = pyqtSignal(float, int)
     render_requested = pyqtSignal(RenderTask)
@@ -628,7 +662,7 @@ class AppController(QObject):
         self.poll_light_temp_requested.connect(self.capture_worker.poll_light_temp)
         self.capture_worker.light_temp_polled.connect(self.light_temp_polled.emit)
 
-        self.session.active_file_changing.connect(lambda: self._update_thumbnail_from_state(force_readback=True))
+        self.session.active_file_changing.connect(self._update_thumbnail_from_state)
         self.session.session_emptied.connect(self._render_memo.clear)
         self.session.session_emptied.connect(self._strip_memo.clear)
         self.session.file_selected.connect(self._on_file_selected_load)
@@ -1250,10 +1284,13 @@ class AppController(QObject):
             self.loading_started.emit()
         self._thumb_config = None
 
+        self.gpu_textures_released.emit()
         self._render_cleanup_requested.emit()
         # The cleanup destroys the GPU textures last_metrics still points at; drop the
-        # densitometer's probe source so hover readouts go quiet until the next render.
+        # densitometer's probe sources so hover readouts go quiet until the next render.
         self.state.last_metrics.pop("normalized_log", None)
+        self.state.last_metrics.pop("base_positive", None)
+        self.state.last_metrics.pop("thumbnail_source", None)
 
         if memo is not None:
             with self.state.metrics_lock:
@@ -1367,7 +1404,9 @@ class AppController(QObject):
         if ir_preview is not None:
             ir_preview, _ = self._split_active_half(ir_preview, None)
         self.state.preview_raw = raw
+        self.state.preview_proxy = _interactive_proxy(raw)
         self.state.preview_ir = ir_preview
+        self.state.preview_ir_proxy = _interactive_ir_proxy(ir_preview, self.state.preview_proxy)
         self.state.has_ir = ir_preview is not None
         if not self.state.has_ir and self.state.dust_overlay_mode == "ir":
             self.state.dust_overlay_mode = "off"
@@ -1797,8 +1836,6 @@ class AppController(QObject):
             self.on_strip_finished(cached["mosaics"], cached["content_rect"], from_cache=True)
             return
 
-        proofing = self.state.soft_proof_enabled
-        icc_input = self.effective_input_icc() if (proofing or self.state.config.process.narrowband_scan) else None
         self.state.test_strip_kind = kind
         self.state.test_strip_pending = True
         self.test_strip_changed.emit(False)
@@ -1815,12 +1852,8 @@ class AppController(QObject):
                 preview_size=float(APP_CONFIG.preview_render_size),
                 overrides=tuple(overrides),
                 grid=grid,
-                icc_input_path=icc_input,
-                icc_output_path=self.effective_output_icc() if proofing else None,
-                color_space=self.state.workspace_color_space,
                 gpu_enabled=self.state.gpu_enabled,
                 ir_buffer=self.state.preview_ir,
-                monitor_icc_bytes=self.state.monitor_icc_bytes,
             )
         )
 
@@ -2263,7 +2296,7 @@ class AppController(QObject):
     def save_current_edits(self) -> None:
         if self.state.current_file_hash:
             self.session.update_config(self.state.config, persist=True)
-            self._update_thumbnail_from_state(force_readback=True)
+            self._update_thumbnail_from_state()
 
     def clear_retouch(self) -> None:
         from negpy.desktop.view.confirm import confirm_clear_heals
@@ -2467,7 +2500,7 @@ class AppController(QObject):
         self.config_updated.emit()
         self.request_render()
 
-    def update_selected_local_mask(self, **changes) -> None:
+    def update_selected_local_mask(self, persist: bool = True, readback_metrics: bool = True, **changes) -> None:
         local = self.state.config.local
         idx = self.state.local_selected_mask
         if not (0 <= idx < len(local.masks)):
@@ -2475,8 +2508,8 @@ class AppController(QObject):
         masks = list(local.masks)
         masks[idx] = replace(masks[idx], **changes)
         new_local = replace(local, masks=tuple(masks))
-        self.session.update_config(replace(self.state.config, local=new_local), persist=True)
-        self.request_render()
+        self.session.update_config(replace(self.state.config, local=new_local), persist=persist)
+        self.request_render(readback_metrics=readback_metrics)
 
     def _handle_wb_pick(self, nx: float, ny: float) -> None:
         """
@@ -3103,23 +3136,35 @@ class AppController(QObject):
             return get_resource_path("icc/RGBScan.icc")
         return None
 
-    def display_transform_params(self, splash: bool = False) -> tuple[str, Optional[bytes]]:
-        """Source space + monitor profile to hand the display transform for the
-        current render, as ``(color_space, monitor_icc_bytes)``.
+    def display_transform_params(self, splash: bool = False) -> tuple[str, Optional[bytes], Optional[tuple]]:
+        """Everything the display transform needs for the current render, as
+        ``(color_space, monitor_icc_bytes, proof)``.
 
         Single source of truth for every consumer of a rendered buffer — the canvas
-        and the filmstrip thumbnail must agree, or the same frame shows two different
-        colours. With a proof active the render worker already baked
-        source→output→monitor into the buffer, so the transform has to be a no-op
-        (sRGB→sRGB, no monitor profile); treating that buffer as working-space instead
-        re-applies the working→sRGB conversion and blows the saturation out. ``splash``
-        marks the embedded camera thumbnail, which is already sRGB.
+        shader, the CPU overlay and the filmstrip thumbnail must agree, or the same
+        frame shows two different colours. Renders arrive in the working space; a
+        proof is *not* baked into them, it is folded into the display LUT here (see
+        ``get_display_lut``), which is what lets a GPU texture go to the shader
+        untouched. ``splash`` marks the embedded camera thumbnail, already sRGB.
         """
         if splash:
-            return ColorSpace.SRGB.value, self.state.monitor_icc_bytes
-        if self.proof_active():
-            return ColorSpace.SRGB.value, None
-        return self.state.workspace_color_space, self.state.monitor_icc_bytes
+            return ColorSpace.SRGB.value, self.state.monitor_icc_bytes, None
+        return self.state.workspace_color_space, self.state.monitor_icc_bytes, self.proof_profiles()
+
+    def proof_profiles(self) -> Optional[tuple]:
+        """``(input_icc, output_icc)`` for the preview proof, or None when off.
+
+        Narrowband Scan supplies an implicit *input* profile whether or not the
+        soft-proof toggle is on; the output profile only applies with the toggle.
+        """
+        proofing = self.state.soft_proof_enabled
+        if not (proofing or self.state.config.process.narrowband_scan):
+            return None
+        icc_input = self.effective_input_icc()
+        icc_output = self.effective_output_icc() if proofing else None
+        if not (icc_input or icc_output):
+            return None
+        return icc_input, icc_output
 
     def proof_active(self) -> bool:
         """True when the preview should soft-proof: the toggle is on and an input or
@@ -3198,23 +3243,26 @@ class AppController(QObject):
         if preview_raw is None:
             return
 
+        # A drag asks for no metrics; the release does. Interactive frames go through
+        # the proxy, so full resolution is reached only once the gesture settles.
+        interactive = not readback_metrics
+        ir_buffer = self.state.preview_ir
+        if interactive and self.state.preview_proxy is not None:
+            preview_raw = self.state.preview_proxy
+            # The IR plane must follow the image it is read against.
+            ir_buffer = self.state.preview_ir_proxy
+
         target_size = float(APP_CONFIG.preview_render_size)
         if self.state.hq_preview:
             target_size = float(max(preview_raw.shape[:2]))
 
-        # Soft-proof gating: Output/Input ICC only touch the preview when the toggle is
-        # on; otherwise the preview is the edit shown on the monitor (export unaffected).
-        # Narrowband Scan supplies an implicit input profile regardless of the toggle.
-        proofing = self.state.soft_proof_enabled
-        narrowband = self.state.config.process.narrowband_scan
-        icc_input = self.effective_input_icc() if (proofing or narrowband) else None
-        effective_output = self.effective_output_icc() if proofing else None
-
         crop_preview_full = self.state.active_tool in (ToolMode.CROP_MANUAL, ToolMode.ANALYSIS_DRAW)
         # Only a plain render of the saved edit is reproducible on navigate-back;
         # overrides (compare/flat peek), splash and tool previews are not memoized.
+        # Interactive frames are excluded: a proxy render filed under the full-resolution
+        # config's key would be painted back as if it were the real one.
         memo_key = ""
-        if config_override is None and not ephemeral and not crop_preview_full:
+        if config_override is None and not ephemeral and not crop_preview_full and not interactive:
             memo_key = self._render_memo_key()
 
         task = RenderTask(
@@ -3222,17 +3270,16 @@ class AppController(QObject):
             config=config_override if config_override is not None else self.state.config,
             source_hash=self.state.current_file_hash or "preview",
             preview_size=target_size,
-            icc_input_path=icc_input,
-            icc_output_path=effective_output,
-            color_space=self.state.workspace_color_space,
             gpu_enabled=self.state.gpu_enabled,
             readback_metrics=readback_metrics,
-            ir_buffer=self.state.preview_ir,
-            monitor_icc_bytes=self.state.monitor_icc_bytes,
+            ir_buffer=ir_buffer,
             crop_preview_full=crop_preview_full,
             ephemeral=ephemeral,
             memo_key=memo_key,
             compare=self.state.compare_mode,
+            interactive=interactive,
+            # Mirrors should_update_thumb, minus its pending-task check.
+            wants_thumbnail=(not interactive and not ephemeral and config_override is None and self.state.config is not self._thumb_config),
         )
 
         if self._is_rendering:
@@ -4041,8 +4088,12 @@ class AppController(QObject):
             self._first_render_t0 = None
 
         # Config is replaced wholesale on every edit, so identity detects any change.
+        # Not mid-gesture: the filmstrip only has to be right once the drag settles.
         should_update_thumb = (
-            self._pending_render_task is None and not metrics.get("ephemeral") and self.state.config is not self._thumb_config
+            self._pending_render_task is None
+            and not metrics.get("ephemeral")
+            and not metrics.get("interactive")
+            and self.state.config is not self._thumb_config
         )
 
         with self.state.metrics_lock:
@@ -4070,7 +4121,7 @@ class AppController(QObject):
         if should_update_thumb:
             self._thumb_config = self.state.config
             # persist=False: refresh in-memory only; disk JPEG written on switch/save/export.
-            self._update_thumbnail_from_state(force_readback=True, persist=False)
+            self._update_thumbnail_from_state(persist=False)
 
         if self._pending_render_task:
             task = self._pending_render_task
@@ -4089,8 +4140,9 @@ class AppController(QObject):
         self.metrics_available.emit(metrics)
 
         # Don't persist bounds from an ephemeral (splash) render or a render of a different
-        # file (late metric after a fast switch) — they aren't this frame's bounds.
-        if metrics.get("ephemeral"):
+        # file (late metric after a fast switch) — they aren't this frame's bounds. Nor
+        # from a mid-gesture frame, which measured the proxy rather than the real buffer.
+        if metrics.get("ephemeral") or metrics.get("interactive"):
             return
         src = metrics.get("source_hash")
         if src is not None and src != self.state.current_file_hash:
@@ -4140,28 +4192,22 @@ class AppController(QObject):
         owner = self._active_batch if self._active_batch in ("export", "contact_sheet") else "export"
         self._end_batch(owner)
         self.export_finished.emit(elapsed, self._export_failures)
-        self._update_thumbnail_from_state(force_readback=True)
+        self._update_thumbnail_from_state()
 
-    def _update_thumbnail_from_state(self, force_readback: bool = False, persist: bool = True) -> None:
+    def _update_thumbnail_from_state(self, persist: bool = True) -> None:
         if not self.state.current_file_path or not self.state.current_file_hash:
             return
         idx = self.state.selected_file_idx
         if not (0 <= idx < len(self.state.uploaded_files)):
             return
-        asset_name = self.state.uploaded_files[idx]["name"]
-
         with self.state.metrics_lock:
             metrics = dict(self.state.last_metrics)
         buffer = metrics.get("base_positive")
 
+        # The render worker supplies host pixels; reading back here would put a
+        # full-frame copy on the UI thread.
         if isinstance(buffer, GPUTexture):
-            t0 = time.perf_counter()
-            buffer = buffer.readback()
-            logger.info(
-                "thumb-refresh readback %.1fms %s",
-                (time.perf_counter() - t0) * 1000,
-                asset_name,
-            )
+            buffer = metrics.get("thumbnail_source")
 
         if buffer is not None and not isinstance(buffer, np.ndarray):
             buffer = metrics.get("analysis_buffer")
@@ -4170,7 +4216,7 @@ class AppController(QObject):
 
         # Same transform the canvas used for this buffer, so the filmstrip and the
         # canvas can't disagree about the frame's colour.
-        display_cs, monitor_bytes = self.display_transform_params(splash=bool(metrics.get("splash")))
+        display_cs, monitor_bytes, proof = self.display_transform_params(splash=bool(metrics.get("splash")))
         # The asset's own key, so the batch (source) path re-serves this rendered positive
         # instead of the uninverted source merge it would decode itself.
         self.thumbnail_update_requested.emit(
@@ -4179,6 +4225,7 @@ class AppController(QObject):
                 buffer=buffer,
                 color_space=display_cs,
                 monitor_icc_bytes=monitor_bytes,
+                proof=proof,
                 persist=persist,
             )
         )

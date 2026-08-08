@@ -1,6 +1,7 @@
 from typing import TYPE_CHECKING, Any, Optional, Tuple
 import math
 import sys
+import numpy as np
 from PyQt6.QtWidgets import QStackedLayout, QMenu, QWidget, QPinchGesture, QGestureEvent
 from PyQt6.QtGui import QCursor, QMouseEvent, QNativeGestureEvent, QPainter, QColor, QWheelEvent
 from PyQt6.QtCore import QEvent, pyqtSignal, Qt, QPointF
@@ -326,6 +327,16 @@ class ImageCanvas(QWidget):
         self.gpu_widget.clear()
         self.overlay.update_buffer(None, "sRGB", None)
 
+    def release_gpu_texture(self) -> None:
+        """Drop the displayed texture before the engine frees its pool.
+
+        The canvas samples pooled stage textures directly, so a frame drawn after the
+        pool is freed fails validation. Zoom and pan survive.
+        """
+        self._last_buffer = None
+        self.gpu_widget.clear()
+        self.overlay.drop_gpu_texture()
+
     def content_rect(self) -> Optional[Tuple[int, int, int, int]]:
         """Image content rect (off_x, off_y, w, h) inside the displayed buffer; None = no borders."""
         return self.overlay._content_rect
@@ -550,25 +561,36 @@ class ImageCanvas(QWidget):
         color_space: str,
         content_rect: Optional[Tuple[int, int, int, int]] = None,
         monitor_icc_bytes: Optional[bytes] = None,
+        proof: Optional[tuple] = None,
     ) -> None:
         """
         Switches between CPU and GPU rendering paths.
 
-        ``monitor_icc_bytes`` drives the CPU display transform (working→monitor); it
-        must be None when ``buffer`` is already in display space (e.g. a baked soft
-        proof) to avoid a double conversion. The GPU path manages its own display LUT.
+        ``monitor_icc_bytes`` and ``proof`` describe the working→display transform for
+        this buffer; both paths apply the identical LUT, the GPU one in its shader.
         """
         self._last_buffer = buffer
         if self.state.gpu_enabled and isinstance(buffer, GPUTexture):
             self.gpu_widget.show()
+            self.gpu_widget.set_display_transform(color_space, monitor_icc_bytes, proof)
             self.gpu_widget.update_texture(buffer)
-            self.overlay.update_buffer(None, color_space, content_rect, gpu_size=(buffer.width, buffer.height))
+            self.overlay.update_buffer(
+                None, color_space, content_rect, gpu_size=(buffer.width, buffer.height), proof=proof, gpu_texture=buffer
+            )
             self.overlay.show()
             self.overlay.raise_()
             self.overlay.update()
         else:
             self.gpu_widget.hide()
-            self.overlay.update_buffer(buffer, color_space, content_rect, monitor_icc_bytes=monitor_icc_bytes)
+            # Only the CPU overlay needs host pixels; the GPU branch above never does.
+            if isinstance(buffer, GPUTexture):
+                try:
+                    readback = buffer.readback()
+                    buffer = np.ascontiguousarray(readback[:, :, :3]) if readback.ndim == 3 and readback.shape[2] >= 3 else readback
+                except Exception:
+                    logger.exception("Failed to read back GPU preview for canvas display")
+                    return
+            self.overlay.update_buffer(buffer, color_space, content_rect, monitor_icc_bytes=monitor_icc_bytes, proof=proof)
             self.overlay.show()
             self.overlay.raise_()
         self._raise_floating_widgets()

@@ -45,6 +45,12 @@ class GPUCanvasWidget(QWidget):
         self.lut_view: Optional[Any] = None
         self.lut_sampler: Optional[Any] = None
         self._monitor_icc_bytes: Optional[bytes] = None
+        self._working_color_space: str = WORKING_COLOR_SPACE
+        self._proof: Optional[tuple] = None
+        # Identity of the LUT currently uploaded, so a settled frame re-uploads nothing.
+        self._lut_key: Optional[tuple] = None
+        # Grid size of that LUT; the proof and display LUTs do not share one.
+        self._lut_n: int = DEFAULT_LUT_SIZE
 
         self.zoom: float = 1.0
         self.pan_x: float = 0.0
@@ -86,8 +92,8 @@ class GPUCanvasWidget(QWidget):
         self.format = self.context.get_preferred_format(adapter).replace("-srgb", "")
         self._configure_context()
 
-        # Uniform buffer now needs 32 bytes (2 * vec4<f32>)
-        self.uniform_buffer = self.device.create_buffer(size=32, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
+        # Uniform buffer: 3 * vec4<f32>
+        self.uniform_buffer = self.device.create_buffer(size=48, usage=wgpu.BufferUsage.UNIFORM | wgpu.BufferUsage.COPY_DST)
         self._upload_display_lut()
         self._create_render_pipeline(self.format)
 
@@ -105,46 +111,68 @@ class GPUCanvasWidget(QWidget):
         self._monitor_icc_bytes = monitor_icc_bytes
         if self.device is not None:
             self._upload_display_lut()
+            self._lut_key = (self._working_color_space, monitor_icc_bytes, self._proof)
             self.canvas.request_draw(self._draw_frame)
+
+    def set_display_transform(self, working_color_space: str, monitor_icc_bytes: Optional[bytes], proof: Optional[tuple]) -> None:
+        """Point the shader at the LUT for the current display state.
+
+        ``proof`` folds the preview soft proof into the same LUT, so a rendered
+        texture reaches the screen without ever coming back to the host.
+        """
+        key = (working_color_space, monitor_icc_bytes, proof)
+        if key == self._lut_key:
+            return
+        self._lut_key = key
+        self._working_color_space = working_color_space
+        self._monitor_icc_bytes = monitor_icc_bytes
+        self._proof = proof
+        if self.device is not None:
+            self._upload_display_lut()
 
     def _upload_display_lut(self) -> None:
         """Build and upload the working-space → display-profile 3D LUT used at
         display time.
 
         The destination is the monitor profile (`self._monitor_icc_bytes`, or sRGB
-        when None). On any failure an identity LUT is uploaded so the binding always
-        exists and display is a pass-through.
+        when None), with the soft proof folded in when one is active. On any failure
+        an identity LUT is uploaded so the binding always exists and display is a
+        pass-through.
+
+        Stored as rgba16float: 8-bit texels would quantize the proof away, and f32 is
+        not filterable in core WebGPU.
         """
-        n = DEFAULT_LUT_SIZE
         try:
-            lut = get_display_lut(WORKING_COLOR_SPACE, self._monitor_icc_bytes)
+            lut = get_display_lut(self._working_color_space, self._monitor_icc_bytes, self._proof)
         except Exception as e:
             logger.warning("Display LUT build failed, using identity: %s", e)
             lut = None
 
         if lut is None:
             # Identity ramp: texel value == its normalized coordinate.
+            n = DEFAULT_LUT_SIZE
             axis = np.linspace(0.0, 1.0, n, dtype=np.float32)
             r, g, b = np.meshgrid(axis, axis, axis, indexing="ij")
             lut = np.stack((r, g, b), axis=-1).astype(np.float32)
+        n = lut.shape[0]
+        self._lut_n = n
 
         # Reorder to (b, g, r, c) so the fastest data axis (r) maps to texture width.
         arr = np.ascontiguousarray(lut.transpose(2, 1, 0, 3))
-        rgba = np.empty((n, n, n, 4), dtype=np.uint8)
-        rgba[..., :3] = np.clip(arr * 255.0 + 0.5, 0, 255).astype(np.uint8)
-        rgba[..., 3] = 255
+        rgba = np.ones((n, n, n, 4), dtype=np.float16)
+        rgba[..., :3] = arr.astype(np.float16)
         rgba = np.ascontiguousarray(rgba)
 
         lut_tex = self.device.create_texture(
             size=(n, n, n),
             dimension=wgpu.TextureDimension.d3,
-            format=wgpu.TextureFormat.rgba8unorm,
+            format=wgpu.TextureFormat.rgba16float,
             usage=wgpu.TextureUsage.TEXTURE_BINDING | wgpu.TextureUsage.COPY_DST,
         )
         self.device.queue.write_texture(
             {"texture": lut_tex},
             rgba,
-            {"bytes_per_row": n * 4, "rows_per_image": n},
+            {"bytes_per_row": n * 8, "rows_per_image": n},
             (n, n, n),
         )
         self.lut_view = lut_tex.create_view(dimension=wgpu.TextureViewDimension.d3)
@@ -198,7 +226,8 @@ class GPUCanvasWidget(QWidget):
         shader_source = """
         struct RenderUniforms {
             rect: vec4<f32>,
-            transform: vec4<f32> // x: zoom, y: pan_x, z: pan_y
+            transform: vec4<f32>, // x: zoom, y: pan_x, z: pan_y, w: LUT grid size
+            filt: vec4<f32>       // x: image pixels per screen pixel
         };
         @group(0) @binding(1) var<uniform> params: RenderUniforms;
 
@@ -241,12 +270,11 @@ class GPUCanvasWidget(QWidget):
         @group(0) @binding(2) var lut_tex: texture_3d<f32>;
         @group(0) @binding(3) var lut_samp: sampler;
 
-        // Working-space → display-profile LUT size (must match DEFAULT_LUT_SIZE).
-        const LUT_N: f32 = 33.0;
-
-        fn lut_coord(v: f32) -> f32 {
+        // Working-space → display-profile LUT grid size, uploaded per LUT: the soft
+        // proof uses a finer grid than the plain display transform.
+        fn lut_coord(v: f32, n: f32) -> f32 {
             // Map a [0,1] value to the texture coord at the matching texel center.
-            return (0.5 + clamp(v, 0.0, 1.0) * (LUT_N - 1.0)) / LUT_N;
+            return (0.5 + clamp(v, 0.0, 1.0) * (n - 1.0)) / n;
         }
 
         fn cubic(v: f32) -> f32 {
@@ -258,6 +286,27 @@ class GPUCanvasWidget(QWidget):
                 return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
             }
             return 0.0;
+        }
+
+        // Minification path. Bicubic reads a 4x4 window of a much denser grid, so it
+        // is no more correct than bilinear there and costs four times the taps.
+        fn textureSampleBilinear(uv: vec2<f32>) -> vec4<f32> {
+            let dims = textureDimensions(tex);
+            let fdims = vec2<f32>(f32(dims.x), f32(dims.y));
+            let pixel = uv * fdims - 0.5;
+            let ipos = floor(pixel);
+            let fpos = fract(pixel);
+
+            var col = vec4<f32>(0.0);
+            for (var y = 0; y <= 1; y++) {
+                for (var x = 0; x <= 1; x++) {
+                    let coord = clamp(vec2<i32>(ipos + vec2<f32>(f32(x), f32(y))), vec2<i32>(0), vec2<i32>(dims) - 1);
+                    let wx = select(1.0 - fpos.x, fpos.x, x == 1);
+                    let wy = select(1.0 - fpos.y, fpos.y, y == 1);
+                    col += textureLoad(tex, coord, 0) * (wx * wy);
+                }
+            }
+            return col;
         }
 
         fn textureSampleBicubic(uv: vec2<f32>) -> vec4<f32> {
@@ -286,8 +335,16 @@ class GPUCanvasWidget(QWidget):
 
         @fragment
         fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-            let col = textureSampleBicubic(in.uv);
-            let coord = vec3<f32>(lut_coord(col.r), lut_coord(col.g), lut_coord(col.b));
+            // filt.x >= 1 = magnifying, the only regime the extra taps buy anything.
+            // Must be if/else: assigning one then overwriting runs both.
+            var col: vec4<f32>;
+            if (params.filt.x >= 1.0) {
+                col = textureSampleBicubic(in.uv);
+            } else {
+                col = textureSampleBilinear(in.uv);
+            }
+            let n = params.transform.w;
+            let coord = vec3<f32>(lut_coord(col.r, n), lut_coord(col.g, n), lut_coord(col.b, n));
             let mapped = textureSampleLevel(lut_tex, lut_samp, coord, 0.0).rgb;
             return vec4<f32>(mapped, col.a);
         }
@@ -308,7 +365,7 @@ class GPUCanvasWidget(QWidget):
                     "visibility": wgpu.ShaderStage.VERTEX | wgpu.ShaderStage.FRAGMENT,
                     "buffer": {
                         "type": wgpu.BufferBindingType.uniform,
-                        "min_binding_size": 32,
+                        "min_binding_size": 48,
                     },
                 },
                 {
@@ -383,7 +440,7 @@ class GPUCanvasWidget(QWidget):
                 self.uniform_buffer,
                 0,
                 struct.pack(
-                    "ffffffff",
+                    "ffffffffffff",
                     (nx / ww) * 2.0 - 1.0,
                     1.0 - (ny / wh) * 2.0,
                     (nw / ww) * 2.0,
@@ -391,7 +448,12 @@ class GPUCanvasWidget(QWidget):
                     self.zoom,
                     self.pan_x,
                     self.pan_y,
-                    0.0,  # padding
+                    float(self._lut_n),
+                    # Screen pixels per image pixel: r fits the image, zoom scales it.
+                    r * self.zoom,
+                    0.0,
+                    0.0,
+                    0.0,
                 ),
             )
 
@@ -404,7 +466,7 @@ class GPUCanvasWidget(QWidget):
                         "resource": {
                             "buffer": self.uniform_buffer,
                             "offset": 0,
-                            "size": 32,
+                            "size": 48,
                         },
                     },
                     {"binding": 2, "resource": self.lut_view},
