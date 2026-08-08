@@ -1,4 +1,4 @@
-"""Linear Output: export a loader's decoded buffer as an untagged 16-bit TIFF.
+"""Linear Output: export a loader's decoded buffer as an untagged 16-bit file.
 
 For single files, bypasses the entire darkroom pipeline — no normalization,
 exposure, lab, toning, finish, flatfield, or sensor-crosstalk correction.
@@ -6,6 +6,8 @@ exposure, lab, toning, finish, flatfield, or sensor-crosstalk correction.
 For composites (stitch / RGB-scan triplets), flatfield and sensor correction
 are applied per-part before assembly so the output is physically correct
 (no vignetting seams or channel crosstalk).
+
+Output format is TIFF (zlib-compressed) or lossless JPEG XL.
 """
 
 import io
@@ -13,6 +15,7 @@ import os
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import imagecodecs
 import numpy as np
 import rawpy
 import tifffile as _tifffile
@@ -901,6 +904,67 @@ def _write_ir_tiff(ir: np.ndarray, dest, source_name: str) -> None:
     )
 
 
+def _write_ir_jxl(ir: np.ndarray, dest, effort: int = 7) -> None:
+    """Write a single-channel IR buffer as a lossless 16-bit grayscale JPEG XL.
+
+    Unlike the RGB path (see _write_jxl), greyscale has no primaries field to get
+    wrong — transfer=LINEAR is the only tag asserted, and it's true.
+    """
+    u16 = _to_uint16_jit(np.ascontiguousarray(ir[:, :, np.newaxis] if ir.ndim == 2 else ir, dtype=np.float32))
+    if u16.ndim == 3 and u16.shape[2] == 1:
+        u16 = u16[:, :, 0]
+    bits = imagecodecs.jpegxl_encode(
+        np.ascontiguousarray(u16),
+        bitspersample=16,
+        photometric="GRAY",
+        transfer="LINEAR",
+        lossless=True,
+        effort=effort,
+        numthreads=0,
+    )
+    data = bytes(bits)
+    if hasattr(dest, "write"):
+        dest.write(data)
+    else:
+        with open(dest, "wb") as fh:
+            fh.write(data)
+
+
+def _write_jxl(
+    f32: np.ndarray,
+    dest,
+    effort: int = 7,
+) -> None:
+    """Write a float32 buffer as a lossless 16-bit JPEG XL to *dest* (path or file-like).
+
+    JPEG XL has no legal "no color info" state (its all-default ColourEncoding still
+    resolves to a concrete sRGB assertion, confirmed against both this binding and the
+    reference cjxl CLI) — unlike the TIFF linear output, this can never be truly
+    untagged. transfer=LINEAR is pinned explicitly since the data genuinely is linear
+    and leaving it unset is one implicit-default change away from silently flipping to
+    nonlinear sRGB. primaries is left at the library default (sRGB) for now: the
+    buffer's real primaries are source-device-native and there's no truthful concrete
+    option among what this binding exposes (photometric/primaries/transfer only —
+    PRIMARIES.CUSTOM needs chromaticity coordinates the binding doesn't accept).
+    """
+    u16 = _to_uint16_jit(np.ascontiguousarray(f32, dtype=np.float32))
+    bits = imagecodecs.jpegxl_encode(
+        np.ascontiguousarray(u16),
+        bitspersample=16,
+        photometric="RGB",
+        transfer="LINEAR",
+        lossless=True,
+        effort=effort,
+        numthreads=0,
+    )
+    data = bytes(bits)
+    if hasattr(dest, "write"):
+        dest.write(data)
+    else:
+        with open(dest, "wb") as fh:
+            fh.write(data)
+
+
 def export_linear_output(
     file_path: str,
     output_path: str,
@@ -916,30 +980,17 @@ def export_linear_output(
     apply_ice: bool = False,
     retouch: Optional[RetouchConfig] = None,
     gamma_key: str = "linear",
+    output_format: str = "tiff",
+    jxl_effort: int = 7,
 ) -> None:
-    """Decode *file_path* and write an untagged linear 16-bit TIFF to *output_path*.
+    """Decode *file_path* and write a linear 16-bit file to *output_path*.
 
-    Lossless geometry (90-degree rotation, horizontal/vertical flip) from *geometry*
-    is applied; fine rotation is ignored (it resamples).
-
-    *expansion* scales the linear data before writing (e.g. 4.0 for Pakon's 14-bit
-    sensor → 16-bit range). ``None`` uses the source-type default; values <= 1.0 disable.
-
-    *rgbscan*, when a valid triplet config, merges three narrowband exposures into
-    one combined RGB buffer before writing.
-
-    *stitch*, when active, decodes all parts (with per-part triplet merge if
-    applicable), applies flatfield and sensor correction per-part, then assembles
-    via stitch_composite.
-
-    *apply_wb*, *apply_flatfield*, *apply_sensor*, *apply_ice*: optional per-step
-    corrections.  When False (default), the raw dump is written unchanged.  When
-    True, the corresponding correction is applied before writing.  *apply_ice*
-    requires an IR channel in the source and a *retouch* config; it uses the
-    configured IR method and threshold.
-
-    If the source has an IR channel, it is written as a separate grayscale TIFF
-    with an ``_ir`` suffix next to the RGB output.
+    *output_format*: ``"tiff"`` (default, zlib-compressed, genuinely untagged) or
+    ``"jxl"`` (lossless JPEG XL — always carries a concrete colour tag, see
+    ``_write_jxl``; not equivalent to the TIFF path's untagged output). *jxl_effort*:
+    1–9 (higher = smaller file, slower encode), used only for ``"jxl"``. The IR
+    sidecar (when present and not consumed by ICE) follows the same *output_format*
+    as the main file — single-channel greyscale either way.
     """
     eff = _effective_expansion(file_path, expansion)
     fmt = _source_format_label(file_path, rgbscan, stitch)
@@ -963,26 +1014,32 @@ def export_linear_output(
         ice_applied = True
     is_stitch = stitch is not None and stitch.stitch_enabled and stitch.stitch_paths
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    _write_tiff(
-        f32,
-        output_path,
-        os.path.basename(file_path),
-        camera_wb,
-        source_path=file_path,
-        source_meta=meta,
-        expansion=eff,
-        source_format=fmt,
-        wb_applied=apply_wb,
-        flatfield_applied=apply_flatfield or is_stitch,
-        sensor_applied=apply_sensor or is_stitch,
-        ice_applied=ice_applied,
-        gamma_key=gamma_key,
-    )
+
+    if output_format == "jxl":
+        _write_jxl(f32, output_path, effort=jxl_effort)
+    else:
+        _write_tiff(
+            f32,
+            output_path,
+            os.path.basename(file_path),
+            camera_wb,
+            source_path=file_path,
+            source_meta=meta,
+            expansion=eff,
+            source_format=fmt,
+            wb_applied=apply_wb,
+            flatfield_applied=apply_flatfield or is_stitch,
+            sensor_applied=apply_sensor or is_stitch,
+            ice_applied=ice_applied,
+            gamma_key=gamma_key,
+        )
 
     if ir is not None and not ice_applied:
-        stem, ext = os.path.splitext(output_path)
-        ir_path = f"{stem}_ir{ext}"
-        _write_ir_tiff(ir, ir_path, os.path.basename(file_path))
+        stem, _ext = os.path.splitext(output_path)
+        if output_format == "jxl":
+            _write_ir_jxl(ir, f"{stem}_ir.jxl", effort=jxl_effort)
+        else:
+            _write_ir_tiff(ir, f"{stem}_ir.tiff", os.path.basename(file_path))
 
 
 def export_linear_output_bytes(file_path: str, geometry: Optional[GeometryConfig] = None) -> tuple[bytes, str]:

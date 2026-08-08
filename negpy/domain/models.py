@@ -165,15 +165,17 @@ EXPORT_COLOR_SPACES: list[str] = [cs.value for cs in ColorSpace if cs not in (Co
 
 
 # Colour spaces JPEG XL can tag (mirror _JXL_COLOR in image_processor). Same as
-# Source is allowed — resolved at export time and rejected by the encoder if it
-# lands on an unsupported space.
+# Source is deliberately excluded: it resolves per-file at export time (usually to
+# the Adobe RGB working space for scans/raws with no embedded profile), and Adobe
+# RGB isn't JXL-taggable — so allowing it here would pass this upfront check and
+# still hard-fail deep in the encoder. Blocking it here forces an explicit,
+# taggable choice instead.
 JXL_TAGGABLE_SPACES = frozenset(
     {
         ColorSpace.SRGB.value,
         ColorSpace.P3_D65.value,
         ColorSpace.REC2020.value,
         ColorSpace.GREYSCALE.value,
-        ColorSpace.SAME_AS_SOURCE.value,
     }
 )
 
@@ -533,11 +535,17 @@ def flat_export_config(export: ExportConfig | ExportPreset) -> Any:
     ``ExportPreset`` — both share the same sizing/format field names — and
     returns the same type it was given.
 
-    Always delivers 16-bit TIFF. Resolution defaults to full original size; if
-    the user explicitly chose Print or Pixels sizing in the export panel, those
-    settings are honoured so flat masters can be downscaled when requested.
+    Delivers 16-bit lossless in TIFF (default) or JXL (if the user chose it
+    and the colour space is JXL-taggable). Resolution defaults to full
+    original size; if the user explicitly chose Print or Pixels sizing in the
+    export panel, those settings are honoured so flat masters can be
+    downscaled when requested.
     """
-    overrides: Dict[str, Any] = {"export_fmt": ExportFormat.TIFF}
+    fmt = export.export_fmt
+    if fmt == ExportFormat.JXL and not export_blocked(fmt, export.export_color_space):
+        overrides: Dict[str, Any] = {"jxl_lossless": True}
+    else:
+        overrides = {"export_fmt": ExportFormat.TIFF}
     if export.export_resolution_mode not in (
         ExportResolutionMode.PRINT.value,
         ExportResolutionMode.TARGET_PX.value,

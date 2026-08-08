@@ -100,9 +100,10 @@ class ExportSettingsForm(QWidget):
         fmt_row = QHBoxLayout()
         fmt_row.addWidget(self._row_label("Format"))
         self.fmt_combo = QComboBox()
-        self.fmt_combo.addItems([f.value for f in ExportFormat])
+        for f in ExportFormat:
+            self.fmt_combo.addItem(f.value, f.value)
         constrain_combo(self.fmt_combo)
-        self.fmt_combo.currentTextChanged.connect(self._on_fmt_changed)
+        self.fmt_combo.currentIndexChanged.connect(self._on_fmt_changed)
         fmt_row.addWidget(self.fmt_combo)
         format_box.addLayout(fmt_row)
 
@@ -350,7 +351,8 @@ class ExportSettingsForm(QWidget):
         if not self._loading:
             self.changed.emit()
 
-    def _on_fmt_changed(self, fmt: str) -> None:
+    def _on_fmt_changed(self, *_ignored: Any) -> None:
+        fmt = self.fmt_combo.currentData()
         self._quality_container.setVisible(fmt == ExportFormat.JPEG)
         self._jxl_container.setVisible(fmt == ExportFormat.JXL)
         self._webp_container.setVisible(fmt == ExportFormat.WEBP)
@@ -362,7 +364,7 @@ class ExportSettingsForm(QWidget):
         """For JXL, grey out colour spaces it can't tag and disable the output ICC
         override (a custom profile would land pixels in an un-enumerable space while
         we still tag enumeratively — a silent mistag)."""
-        is_jxl = self.fmt_combo.currentText() == ExportFormat.JXL
+        is_jxl = self.fmt_combo.currentData() == ExportFormat.JXL
 
         model = self.color_space_combo.model()
         for i in range(self.color_space_combo.count()):
@@ -377,6 +379,15 @@ class ExportSettingsForm(QWidget):
             self.icc_output_combo.setCurrentIndex(0)  # None — no custom output profile
         self.icc_output_combo.setEnabled(not is_jxl)
 
+        # flat_export_config() always forces jxl_lossless=True for a flat master —
+        # hide the lossy toggle/distance rather than show a control that's silently
+        # overridden at export time.
+        flat_locked_lossless = self._flat_mode and is_jxl
+        if flat_locked_lossless:
+            self.jxl_lossless_check.setChecked(True)
+        self.jxl_lossless_check.setVisible(not flat_locked_lossless)
+        self.jxl_distance_spin.setVisible(not flat_locked_lossless)
+
     def _on_jxl_lossless_toggled(self, lossless: bool) -> None:
         self.jxl_distance_spin.setEnabled(not lossless)
         self._on_changed()
@@ -385,7 +396,7 @@ class ExportSettingsForm(QWidget):
         """True when the current JXL + colour space pairing can't be tagged."""
         if self._flat_mode:
             return False
-        return export_blocked(self.fmt_combo.currentText(), self.color_space_combo.currentText())
+        return export_blocked(self.fmt_combo.currentData(), self.color_space_combo.currentText())
 
     def _refresh_jxl_warning(self) -> None:
         blocked = self.is_export_blocked()
@@ -443,45 +454,38 @@ class ExportSettingsForm(QWidget):
         else:
             self._ratio_row_widget.setVisible(True)
 
-    def set_flat_mode(self, enabled: bool, *, preset_editor: bool = False) -> None:
-        """Toggle flat-master export UI: hide delivery formats, adjust size rows.
-
-        When ``preset_editor`` is True (Manage Presets dialog), the format row stays
-        visible but limited to 16-bit TIFF instead of hiding entirely.
-        """
+    def set_flat_mode(self, enabled: bool) -> None:
+        """Toggle flat-master export UI: constrain FORMAT to TIFF/JXL (a flat master
+        is always 16-bit lossless), adjust size rows. Same behaviour in the export
+        sidebar and the presets dialog's flat preset editor — both need the format
+        choice, not just sizing."""
         enabled = bool(enabled)
         if enabled == self._flat_mode:
             return
         self._flat_mode = enabled
 
-        if preset_editor:
-            self._format_section.setVisible(True)
-            current = self.fmt_combo.currentText()
-            self.fmt_combo.blockSignals(True)
-            self.fmt_combo.clear()
-            if enabled:
-                flat_formats = [ExportFormat.TIFF.value]
-                self.fmt_combo.addItems(flat_formats)
-                self.fmt_combo.setCurrentText(current if current in flat_formats else ExportFormat.TIFF.value)
-                self._quality_container.setVisible(False)
-                self._jxl_container.setVisible(False)
-                self._webp_container.setVisible(False)
-            else:
-                all_formats = [f.value for f in ExportFormat]
-                self.fmt_combo.addItems(all_formats)
-                self.fmt_combo.setCurrentText(current if current in all_formats else ExportFormat.JPEG.value)
-            self.fmt_combo.blockSignals(False)
-            if not enabled:
-                self._on_fmt_changed(self.fmt_combo.currentText())
-            self._update_ratio_visibility()
-            return
-
-        self._format_section.setVisible(not enabled)
+        self._format_section.setVisible(True)
+        current = self.fmt_combo.currentData()
+        self.fmt_combo.blockSignals(True)
+        self.fmt_combo.clear()
         if enabled:
-            self._update_ratio_visibility()
+            # "(lossless)" on the JXL entry — a flat master is always lossless
+            # (flat_export_config() forces jxl_lossless=True), so the label should
+            # never leave that in doubt the way the general "JXL" entry does.
+            flat_items = [(ExportFormat.TIFF.value, ExportFormat.TIFF.value), ("JXL (lossless)", ExportFormat.JXL.value)]
+            for label, data in flat_items:
+                self.fmt_combo.addItem(label, data)
+            target = current if current in (ExportFormat.TIFF.value, ExportFormat.JXL.value) else ExportFormat.TIFF.value
         else:
-            self._on_fmt_changed(self.fmt_combo.currentText())
-            self._update_ratio_visibility()
+            for f in ExportFormat:
+                self.fmt_combo.addItem(f.value, f.value)
+            all_formats = [f.value for f in ExportFormat]
+            target = current if current in all_formats else ExportFormat.JPEG.value
+        idx = self.fmt_combo.findData(target)
+        self.fmt_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.fmt_combo.blockSignals(False)
+        self._on_fmt_changed()
+        self._update_ratio_visibility()
 
     def flat_mode(self) -> bool:
         return self._flat_mode
@@ -496,7 +500,12 @@ class ExportSettingsForm(QWidget):
         """Populate all rows from a dict of shared field values."""
         self._loading = True
         try:
-            self.fmt_combo.setCurrentText(v["export_fmt"])
+            # findData() compares across the QVariant boundary — item data is a plain
+            # str, but a caller may hand back an ExportFormat (StrEnum) member, which
+            # never matches there even though it's == the str in Python. Normalize.
+            fmt_idx = self.fmt_combo.findData(str(v["export_fmt"]))
+            if fmt_idx >= 0:
+                self.fmt_combo.setCurrentIndex(fmt_idx)
             self.quality_spin.setValue(v.get("jpeg_quality", 90))
             self._quality_container.setVisible(v["export_fmt"] == ExportFormat.JPEG)
 
@@ -544,7 +553,7 @@ class ExportSettingsForm(QWidget):
         in_idx = self.input_combo.currentIndex()
         out_idx = self.icc_output_combo.currentIndex()
         return {
-            "export_fmt": self.fmt_combo.currentText(),
+            "export_fmt": self.fmt_combo.currentData(),
             "jpeg_quality": int(self.quality_spin.value()),
             "jxl_lossless": self.jxl_lossless_check.isChecked(),
             "jxl_distance": self.jxl_distance_spin.value(),
