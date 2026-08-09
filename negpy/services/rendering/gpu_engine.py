@@ -2039,10 +2039,15 @@ class GPUEngine:
         result[off_y : off_y + content_h, off_x : off_x + content_w] = scaled_content
         return result, metrics_ref
 
-    def cleanup(self, collect: bool = True) -> None:
-        """Evacuates the texture pool; optionally forces garbage collection."""
+    def cleanup(self, collect: bool = True, retain: Optional[GPUTexture] = None) -> None:
+        """Evacuates the texture pool; optionally forces garbage collection.
+
+        ``retain`` is handed to the caller instead: its pool key goes with it, so the
+        next render allocates a fresh one rather than painting over borrowed pixels.
+        """
         for tex in self._tex_cache.values():
-            tex.destroy()
+            if tex is not retain:
+                tex.destroy()
         self._tex_cache.clear()
         # Bind groups reference the destroyed views — drop them.
         self._bind_group_cache.clear()
