@@ -1,5 +1,15 @@
 # Change Log
 
+## 0.49.0
+
+- New: **Oval and card-edge dodge/burn masks** — a mask can now be an oval (burn through a hole in the card) or a gradient (the graduated card-edge ramp), and any mask can be inverted to print outside its own shape. Handles may sit off the frame, so a tilted edge holds a whole corner. Old saves load as polygons.
+- New: **JPEG XL** — lossless JXL files load as sources, and Linear, print and flat exports can write standalone lossless JXL, with an effort slider and a matching IR sidecar. TIFF stays zlib-only; JXL cannot carry an arbitrary ICC profile, so its colour tagging is limited to sRGB/P3/Rec 2020/Greyscale. @thetalkingdrum
+- New: **Sticky Zoom** — keeps the current zoom level when you move to another frame instead of resetting to fit-to-window; toolbar overflow menu, canvas right-click menu or a bindable shortcut, and it survives restarts. @thetalkingdrum
+- New: **Immersive Canvas** — off, fit-to-window reserves room for the floating toolbar so the pill never sits on the picture. Persists across sessions. @thetalkingdrum
+- Change: **Preview is much faster** — a drag frame drops 135ms → 12ms, and an HQ drag frame 5.6s → 11ms. Stage skipping now really runs, autocrop, flat-field and the dodge/burn map are cached, the soft proof rides the display LUT, and a live gesture renders against a preview-size proxy. Releasing the slider still renders the full frame, and the last eight rendered frames are kept, not two, so navigating back repaints at once.
+- Fix: **Sharpening now applies to the exported pixels** — the unsharp radius scaled with the pipeline, so 1 px became a ~6 px blur on a 24 MP export and read as contrast. Radius is in output pixels on both paths, and export downscales are area-correct. Judge sharpening at 1:1.
+- Fix: **IR capture on scanners that switch source** — Plustek and Epson-class flatbeds kept the Capture IR checkbox disabled although the scan path worked; the two passes are also aligned to each other and each reports its own progress. @cymbal221
+
 ## 0.48.1
 
 - New: **Printing Notes** — Export tab previews a marked-up work print on canvas (Shift+N) and writes it as `<stem>_notes.jpg`: burns hatched, dodges open, masks badged in stops, print recipe below. Normal exports aren't annotated.
