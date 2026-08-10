@@ -4,17 +4,22 @@ import numpy as np
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.retouch.logic import (
+    _IR_SCORE_FLOOR,
     apply_hair_inpaint,
     apply_score_repair,
     compute_dust_stats,
     detect_luma_score,
+    film_scale,
     hair_bake_token,
     ir_defect_score,
+    lines_to_score,
     manual_bake_token,
     normalize_ir,
     repair_components,
     route_wide_defects,
+    scratch_detect_bar,
     strokes_to_score,
+    trace_scratch,
 )
 from negpy.features.retouch.models import HEAL_SIZE_REF, RetouchConfig
 
@@ -192,11 +197,13 @@ def test_preset_save_excludes_frame_specific_heals():
             dust_remove=True,
             manual_dust_spots=[(0.1, 0.2, 6.0)],
             manual_heal_strokes=[([[0.3, 0.4]], 5.0, 0.02, -0.01)],
+            scratch_lines=[(0.0, 0.5, 1.0, 0.51, 3.0)],
         )
     )
     data = selected_flat_dict(cfg, all_rows())
     assert "manual_heal_strokes" not in data
     assert "manual_dust_spots" not in data
+    assert "scratch_lines" not in data
     assert data["dust_remove"] is True
 
 
@@ -306,3 +313,140 @@ def test_hair_bake_token_tracks_detection_params():
     a = RetouchConfig(dust_remove=True, dust_threshold=0.5, dust_size=4)
     assert hair_bake_token(a) != hair_bake_token(RetouchConfig(dust_remove=True, dust_threshold=0.6, dust_size=4))
     assert hair_bake_token(a) == hair_bake_token(RetouchConfig(dust_remove=True, dust_threshold=0.5, dust_size=4))
+
+
+def _transport_scratch(h=400, w=1200, depth=0.12, slope=0.006, seed=3):
+    """A faint, slightly sloped full-length scratch — the #788 defect. Per pixel it sits
+    well under the brush's seed bar; only its length makes it findable."""
+    rng = np.random.default_rng(seed)
+    img = (np.full((h, w, 3), 0.45) + rng.normal(0, 0.012, (h, w, 3))).astype(np.float32)
+    row0 = h // 2
+    for x in range(w):
+        y = int(round(row0 + slope * (x - w / 2)))
+        img[y : y + 2, x] *= 1.0 + depth
+    return img, row0, slope
+
+
+def test_trace_scratch_finds_a_faint_sloped_line():
+    img, row0, slope = _transport_scratch()
+    h, w = img.shape[:2]
+    line = trace_scratch(img, 0.5, (row0 + 0.5) / h)
+    assert line is not None, "a real transport scratch must be traced from one click"
+    nx0, ny0, nx1, ny1, _width = line
+    assert nx1 - nx0 > 0.8, "the trace must follow the scratch across the frame"
+    fitted = (ny1 - ny0) * h / max((nx1 - nx0) * w, 1e-6)
+    assert abs(fitted - slope) < 0.002, f"slope {fitted:.4f} does not match the scratch's {slope:.4f}"
+
+
+def test_trace_scratch_is_none_on_clean_film():
+    rng = np.random.default_rng(5)
+    img = (np.full((300, 900, 3), 0.45) + rng.normal(0, 0.012, (300, 900, 3))).astype(np.float32)
+    assert trace_scratch(img, 0.5, 0.5) is None, "clean film must not yield a line"
+
+
+def test_traced_line_repairs_the_scratch_and_spares_the_film():
+    img, row0, _slope = _transport_scratch()
+    h, w = img.shape[:2]
+    line = trace_scratch(img, 0.5, (row0 + 0.5) / h)
+    score = lines_to_score(img, [line])
+    assert score is not None
+    out = np.asarray(repair_components(img, score, floor=False, factor=film_scale((h, w))))
+
+    # Follow the scratch's own path — it drifts with x, so a fixed row band is mostly film.
+    xs = np.arange(50, w - 50)
+    ys = np.round(row0 + _slope * (xs - w / 2)).astype(int)
+    before = float(np.abs(img[ys, xs] - 0.45).mean())
+    after = float(np.abs(out[ys, xs] - 0.45).mean())
+    assert after < before * 0.4, f"scratch not repaired ({before:.4f} -> {after:.4f})"
+    # Film a few rows away is untouched: the line is a search area like the brush.
+    far = np.s_[row0 + 20 : row0 + 60, :]
+    assert np.array_equal(out[far], img[far]), "film away from the line must be untouched"
+
+
+def test_line_score_skips_stretches_with_no_scratch():
+    """A transport scratch fades in and out, so the repair follows the evidence rather
+    than painting the full width."""
+    img, row0, _ = _transport_scratch()
+    h, w = img.shape[:2]
+    clean = img.copy()
+    rng = np.random.default_rng(9)
+    clean[:, : w // 2] = (np.full((h, w // 2, 3), 0.45) + rng.normal(0, 0.012, (h, w // 2, 3))).astype(np.float32)
+    line = trace_scratch(clean, 0.75, (row0 + 0.5) / h)
+    assert line is not None
+    score = lines_to_score(clean, [line])
+    assert score is not None
+    left = (score[:, : w // 4] < 1.0).sum()
+    right = (score[:, 3 * w // 4 :] < 1.0).sum()
+    assert right > 0 and left == 0, f"scored the clean half too (left={left}, right={right})"
+
+
+def test_manual_bake_token_tracks_scratch_lines():
+    base = RetouchConfig()
+    one = RetouchConfig(scratch_lines=[(0.0, 0.5, 1.0, 0.51, 3.0)])
+    two = RetouchConfig(scratch_lines=[(0.0, 0.5, 1.0, 0.51, 3.0), (0.0, 0.2, 1.0, 0.21, 3.0)])
+    assert manual_bake_token(base) == ""
+    assert manual_bake_token(one) != manual_bake_token(two)
+
+
+def test_scratch_lines_serialization_roundtrip():
+    cfg = WorkspaceConfig(retouch=RetouchConfig(scratch_lines=[(0.1, 0.5, 0.9, 0.52, 3.0)]))
+    restored = WorkspaceConfig.from_flat_dict(json.loads(json.dumps(cfg.to_dict())))
+    assert [tuple(line) for line in restored.retouch.scratch_lines] == [(0.1, 0.5, 0.9, 0.52, 3.0)]
+
+
+def test_hand_placed_repairs_are_not_refused_by_the_frame_budget():
+    """The budget guards an automatic detector: a garbage IR plane can call half the frame a
+    defect. A hand-placed repair is deliberate, and a full-width scratch covers more than the
+    cap on its own, so it must not be judged by it."""
+    h, w = 400, 1600
+    score = np.ones((h, w), dtype=np.float32)
+    score[190:214, :] = _IR_SCORE_FLOOR  # a wide full-width band: 6% of the frame
+
+    assert route_wide_defects(score) is None, "over budget, as it would be for IR"
+    assert route_wide_defects(score, budget=None) is not None, "a hand-placed repair must still route"
+
+
+def test_wide_scratch_is_repaired():
+    """The band is grown from the scratch, so a thick one is covered rather than cut to a
+    fixed width and left with its flanks showing."""
+    h, w, thick = 400, 1600, 8
+    rng = np.random.default_rng(3)
+    img = (np.full((h, w, 3), 0.45) + rng.normal(0, 0.012, (h, w, 3))).astype(np.float32)
+    row0 = h // 2
+    for x in range(w):
+        img[row0 : row0 + thick, x] *= 1.12
+
+    line = trace_scratch(img, 0.5, (row0 + thick / 2) / h)
+    assert line is not None
+    score = lines_to_score(img, [line])
+    assert score is not None
+    out = np.asarray(repair_components(img, score, floor=False, factor=film_scale((h, w))))
+    routed = route_wide_defects(score, budget=None)
+    if routed is not None:
+        out = np.asarray(apply_hair_inpaint(out, [routed]))
+
+    band = np.s_[row0 : row0 + thick, 60 : w - 60]
+    before = float(np.abs(img[band] - 0.45).mean())
+    after = float(np.abs(out[band] - 0.45).mean())
+    assert after < before * 0.35, f"wide scratch not repaired ({before:.4f} -> {after:.4f})"
+
+
+def test_line_sensitivity_trades_reach_for_restraint():
+    """The slider must actually move the bar: a looser setting follows a scratch further and
+    repairs a wider band, a tighter one holds back."""
+    img, row0, _ = _transport_scratch(depth=0.08)
+    h, w = img.shape[:2]
+    line = trace_scratch(img, 0.5, (row0 + 0.5) / h, threshold=0.5)
+    assert line is not None
+
+    loose = lines_to_score(img, [line], threshold=0.05)
+    tight = lines_to_score(img, [line], threshold=0.95)
+    assert loose is not None
+    n_loose = int((loose < 1.0).sum())
+    n_tight = 0 if tight is None else int((tight < 1.0).sum())
+    assert n_loose > n_tight, f"sensitivity did nothing (loose {n_loose}, tight {n_tight})"
+
+
+def test_scratch_detect_bar_is_monotonic():
+    bars = [scratch_detect_bar(v) for v in (0.05, 0.5, 0.95)]
+    assert bars == sorted(bars), "higher must be more conservative"
