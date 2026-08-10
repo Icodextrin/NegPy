@@ -145,6 +145,7 @@ class DarkroomEngine:
             settings.process.black_point_trim_blue,
             settings.process.crosstalk_strength,
             settings.process.crosstalk_matrix,
+            settings.process.crosstalk_process,
             settings.process.lock_bounds,
             distortion_k1,
             # Auto Density metering reads retuned targets from EXPOSURE_CONSTANTS,
@@ -155,7 +156,7 @@ class DarkroomEngine:
         current_img, pipeline_changed = self._run_stage(current_img, base_key, "base", run_base, context, pipeline_changed)
 
         def run_exposure(img_in: ImageBuffer, ctx: PipelineContext) -> ImageBuffer:
-            img_out = PhotometricProcessor(settings.exposure, settings.local).process(img_in, ctx)
+            img_out = PhotometricProcessor(settings.exposure, settings.local, settings.process).process(img_in, ctx)
             # Rides this stage: it needs the print, and its own stage would re-run everything
             # behind it on a drag. Stays inside the flat intent below (capture fix, not a look).
             return apply_hue_trim(img_out, settings.process.hue_trim)
