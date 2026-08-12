@@ -246,6 +246,7 @@ class ScanSidebar(QWidget):
         self.pattern_edit.setText(self._settings.filename_pattern)
         self.autofocus_check.setChecked(self._settings.autofocus)
         self.ae_check.setChecked(self._settings.auto_exposure)
+        self.exposure_slider.setEnabled(not self._settings.auto_exposure)
 
     def _connect_signals(self) -> None:
         self.refresh_btn.clicked.connect(self._on_refresh)
@@ -261,7 +262,7 @@ class ScanSidebar(QWidget):
         self.depth_combo.currentTextChanged.connect(lambda: self._update_settings_from_ui())
         self.ir_check.toggled.connect(lambda: self._update_settings_from_ui())
         self.autofocus_check.toggled.connect(lambda: self._update_settings_from_ui())
-        self.ae_check.toggled.connect(lambda: self._update_settings_from_ui())
+        self.ae_check.toggled.connect(lambda: self._on_ae_toggled())
         self.exposure_slider.valueChanged.connect(self._on_exposure_changed)
         self.frame_from_spin.valueChanged.connect(self._on_frame_from_changed)
         self.frame_to_spin.valueChanged.connect(self._on_frame_to_changed)
@@ -379,6 +380,8 @@ class ScanSidebar(QWidget):
         self.eject_btn.setVisible(caps.can_eject)
         self.eject_btn.setEnabled(caps.can_eject and not self._scanning)
         self.frame_label.setText(f"Frame: {caps.max_area_mm[0]:.0f} × {caps.max_area_mm[1]:.0f} mm")
+        self.autofocus_check.setChecked(caps.autofocus)
+        self.autofocus_check.setVisible(caps.autofocus)
 
         # If no film sources, show banner
         if not caps.sources:
@@ -491,6 +494,10 @@ class ScanSidebar(QWidget):
         self.ae_check.blockSignals(False)
         self.frame_from_spin.blockSignals(False)
         self.frame_to_spin.blockSignals(False)
+
+    def _on_ae_toggled(self) -> None:
+        self.exposure_slider.setEnabled(not self.ae_check.isChecked()) 
+        self._update_settings_from_ui()
 
     def _on_exposure_changed(self, _value: int) -> None:
         self._update_exposure_value_label()
@@ -659,9 +666,10 @@ class ScanSidebar(QWidget):
             self.set_scanning(False)
             self.status_label.setText(f"Scanner busy: {e}")
 
-    @pyqtSlot(float)
-    def _on_scan_progress(self, progress: float) -> None:
+    @pyqtSlot(float, str)
+    def _on_scan_progress(self, progress: float, phase_name: str = 'Scanning') -> None:
         self.progress_bar.setVisible(True)
+        self.progress_bar.setFormat(f"{phase_name}… %p%")
         self.progress_bar.setValue(int(progress * 100))
 
     @pyqtSlot(str)

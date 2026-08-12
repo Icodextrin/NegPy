@@ -1,4 +1,3 @@
-import sys
 from typing import Any, Dict
 
 import numpy as np
@@ -99,12 +98,9 @@ class RightPanel(QWidget):
         self.metadata_sidebar = MetadataSidebar(self.controller)
         self.history_panel = HistoryPanel(self.controller)
 
-        from negpy.desktop.view.sidebar.scan import ScanSidebar, _ScanUnsupportedPlaceholder
+        from negpy.desktop.view.sidebar.scan import ScanSidebar
 
-        if sys.platform == "win32":
-            self.scan_sidebar = _ScanUnsupportedPlaceholder()
-        else:
-            self.scan_sidebar = ScanSidebar(self.controller)
+        self.scan_sidebar = ScanSidebar(self.controller)
 
         from negpy.desktop.view.sidebar.scanlight import ScanlightSidebar
 
