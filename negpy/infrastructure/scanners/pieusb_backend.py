@@ -109,9 +109,8 @@ def _as_scan_error(exc: BaseException, params: ScanParams) -> Exception:
 class PieusbSession:
     device_id: str
 
-
     def __init__(self, backend: PieusbBackend) -> None:
-        raise NotImplementedError('PieusbSession not yet implemented')
+        raise NotImplementedError("PieusbSession not yet implemented")
 
     def scan(
         self,
@@ -169,7 +168,7 @@ class PieusbBackend:
                 max_area_mm=(max_w, max_h),
                 auto_exposure=True,
                 autofocus=False,
-                exposure_time_us=(4100, 65518), # Empirical findings, not really matching reality, either
+                exposure_time_us=(4100, 65518),  # Empirical findings, not really matching reality, either
             )
             device_str = f"pieusb:{dev.dev.bus}:{dev.dev.address}"
             self._devices_map[device_str] = dev
@@ -230,12 +229,7 @@ class PieusbBackend:
                 nonlocal result, scan_error, scan_cancelled
                 scan_error = scan_result.error
                 scan_cancelled = scan_result.cancelled
-                result = ScanResult(
-                    rgb=scan_result.rgb,
-                    ir=scan_result.ir,
-                    dpi=params.dpi,
-                    device_model=dev.inquiry.model_str
-                )
+                result = ScanResult(rgb=scan_result.rgb, ir=scan_result.ir, dpi=params.dpi, device_model=dev.inquiry.model_str)
 
             s.scan(on_update, on_complete)
 

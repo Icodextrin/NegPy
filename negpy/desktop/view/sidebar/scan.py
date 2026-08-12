@@ -496,7 +496,7 @@ class ScanSidebar(QWidget):
         self.frame_to_spin.blockSignals(False)
 
     def _on_ae_toggled(self) -> None:
-        self.exposure_slider.setEnabled(not self.ae_check.isChecked()) 
+        self.exposure_slider.setEnabled(not self.ae_check.isChecked())
         self._update_settings_from_ui()
 
     def _on_exposure_changed(self, _value: int) -> None:
@@ -667,7 +667,7 @@ class ScanSidebar(QWidget):
             self.status_label.setText(f"Scanner busy: {e}")
 
     @pyqtSlot(float, str)
-    def _on_scan_progress(self, progress: float, phase_name: str = 'Scanning') -> None:
+    def _on_scan_progress(self, progress: float, phase_name: str = "Scanning") -> None:
         self.progress_bar.setVisible(True)
         self.progress_bar.setFormat(f"{phase_name}… %p%")
         self.progress_bar.setValue(int(progress * 100))
