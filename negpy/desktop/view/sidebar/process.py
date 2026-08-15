@@ -1,5 +1,6 @@
 import math
 
+import numpy as np
 import qtawesome as qta
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -16,6 +17,8 @@ from negpy.desktop.view.styles.templates import EditedDot, section_subheader, wr
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.sliders import CompactSlider
 from negpy.features.exposure.models import EXPOSURE_CONSTANTS
+from negpy.features.hdr.logic import output_scale
+from negpy.features.hdr.models import ANCHOR_EV_UNSET
 from negpy.features.process.models import ProcessMode, invalidate_local_bounds
 
 # Luma Range Clip slider mapping: positions 0..100 clip the histogram tails; negative
@@ -180,6 +183,28 @@ class ProcessSidebar(BaseSidebar):
         wp_bp_row.addWidget(self.black_point_slider)
         self.layout.addLayout(wp_bp_row)
 
+        # Render exposure for a merged bracket, continuous rather than snapped to the frames
+        # that happen to have been shot. The menu still offers those, and writes a frame name;
+        # this writes a value and wins. 0 = the reference (the brightest unclipped frame),
+        # which is the most a merge can open at — output_scale clamps above it.
+        self.render_ev_slider = CompactSlider("Render Exposure", -4.0, 0.0, 0.0, step=0.05, unit=" EV")
+        self.render_ev_slider.setToolTip(
+            wrap_tooltip(
+                "Which exposure a merged bracket renders at, in stops below the reference frame. "
+                "The reference is the longest capture that does not clip, so it is the brightest "
+                "the merge can open at — a slide's own highlights are denser than clear film, so "
+                "that is usually brighter than the shot you metered for.<br><br>"
+                "Right-click the frame for <b>Render exposure</b> to snap to an exposure you "
+                "actually shot; this slider goes anywhere between them."
+            )
+        )
+        # Live again: the merge is cached unscaled, so a change of exposure is one multiply
+        # on the cached buffer rather than another decode of the bracket. valueChanged is
+        # already trailing-debounced, so a drag costs a few of those, not a few decodes.
+        self.render_ev_slider.valueChanged.connect(lambda v: self.controller.set_hdr_anchor_ev(float(v), persist=False))
+        self.render_ev_slider.valueCommitted.connect(lambda v: self.controller.set_hdr_anchor_ev(float(v)))
+        self.render_ev_slider.setVisible(False)
+
         self.normalize_e6_btn = QPushButton(" Normalize")
         self.normalize_e6_btn.setCheckable(True)
         self.normalize_e6_btn.setIcon(qta.icon("fa5s.magic", color=THEME.text_primary))
@@ -198,6 +223,7 @@ class ProcessSidebar(BaseSidebar):
             )
         )
         self.layout.addWidget(self.normalize_e6_btn)
+        self.layout.addWidget(self.render_ev_slider)
 
         self.layout.addStretch()
 
@@ -341,6 +367,23 @@ class ProcessSidebar(BaseSidebar):
 
             is_e6 = conf.process_mode == ProcessMode.E6
             self.normalize_e6_btn.setVisible(is_e6)
+
+            # Only a merge has a render exposure to choose, and only the transfer path uses
+            # a fixed window for it to mean anything against.
+            merged = bool(self.state.config.hdr.hdr_enabled and self.state.config.hdr.hdr_paths)
+            self.render_ev_slider.setVisible(merged and transfer)
+            if merged:
+                hdr = self.state.config.hdr
+                ev = float(hdr.hdr_anchor_ev)
+                if ev >= ANCHOR_EV_UNSET:
+                    # Unset means the bracket's middle exposure, which is only 0 EV when it
+                    # clamps there. Showing a bare 0.00 would misreport where the picture
+                    # actually sits on any bracket spread either side of the reference.
+                    scale = output_scale([float(r) for r in hdr.hdr_ratios])
+                    ev = float(np.log2(scale)) if scale > 0 else 0.0
+                self.render_ev_slider.blockSignals(True)
+                self.render_ev_slider.setValue(ev)
+                self.render_ev_slider.blockSignals(False)
             self.normalize_e6_btn.setChecked(conf.e6_normalize)
 
             self.lock_bounds_btn.setChecked(conf.lock_bounds)
