@@ -1,5 +1,6 @@
 import os
 import io
+import ctypes
 import cv2
 import rawpy
 import tifffile
@@ -76,7 +77,7 @@ from negpy.infrastructure.loaders.helpers import (
 )
 from negpy.services.export.print import PrintService
 from negpy.infrastructure.display.color_spaces import ColorSpaceRegistry, WORKING_COLOR_SPACE
-from negpy.infrastructure.display.icc_lut import apply_icc_u16_rgb
+from negpy.infrastructure.display.icc_lut import DEFAULT_LUT_SIZE, apply_icc_u16_rgb
 
 # Preview soft-proof LUT grid. Finer than the display LUT because the proof clips at
 # the output gamut boundary, and interpolating across that kink is where the error is.
@@ -1178,12 +1179,19 @@ class ImageProcessor:
         color_space: str,
         output_icc_path: Optional[str],
         input_icc_path: Optional[str] = None,
+        lut_size: int = DEFAULT_LUT_SIZE,
     ) -> Tuple[np.ndarray, Optional[bytes]]:
         """ICC RGB transform for 16-bit arrays (PIL has no 16-bit RGB mode).
 
         Source is the input override or the working space; destination is the output
         override or the target space. One src→dst transform, so the embedded profile
         matches the pixels.
+
+        Trilinear LUT approximation, not the exact per-pixel evaluation
+        _apply_color_management_u16 gets from lcms2 via imagecodecs — this is the
+        fallback for when that codec is unavailable (see its docstring), so accuracy
+        trades off against not depending on it. ``lut_size`` lets an export ask for a
+        finer grid than the interactive display LUT needs.
         """
         has_custom = self._has_custom_icc(input_icc_path, output_icc_path)
         if not has_custom and working_color_space == color_space:
@@ -1199,6 +1207,7 @@ class ImageProcessor:
                 p_dst,
                 ImageCms.Intent.RELATIVE_COLORIMETRIC,
                 ImageCms.Flags.BLACKPOINTCOMPENSATION,
+                size=lut_size,
             )
             return result, self._get_target_icc_bytes(color_space, output_icc_path)
         except Exception as e:
@@ -1262,6 +1271,12 @@ class ImageProcessor:
         PIL has no 16-bit RGB mode so we use imagecodecs.cms_transform
         (already a dependency for JXL) which evaluates lcms2 at full
         16-bit precision on numpy arrays directly.
+
+        cms_transform's underlying dlopen can fail (see
+        LIBLCMS2_DYLIB_COLLISION.md for one real cause); imagecodecs' lazy
+        resolver only surfaces that as a generic ImportError, discarding the
+        real reason. Fall back to the LUT-based transform rather than
+        silently export unmanaged pixels.
         """
         has_custom = self._has_custom_icc(input_icc_path, output_icc_path)
         if not has_custom and working_color_space == color_space:
@@ -1274,20 +1289,49 @@ class ImageProcessor:
                 logger.warning("CMS skipped: ICC profile not found")
                 return img_u16, self._get_target_icc_bytes(color_space, output_icc_path)
 
-            result = imagecodecs.cms_transform(
-                np.ascontiguousarray(img_u16),
-                src_bytes,
-                dst_bytes,
-                colorspace="RGB",
-                outcolorspace="RGB",
-                intent=1,  # RELATIVE_COLORIMETRIC
-                flags=0x2000,  # BLACKPOINTCOMPENSATION (matches PIL's value)
-            )
+            try:
+                result = imagecodecs.cms_transform(
+                    np.ascontiguousarray(img_u16),
+                    src_bytes,
+                    dst_bytes,
+                    colorspace="RGB",
+                    outcolorspace="RGB",
+                    intent=1,  # RELATIVE_COLORIMETRIC
+                    flags=0x2000,  # BLACKPOINTCOMPENSATION (matches PIL's value)
+                )
+            except ImportError as e:
+                self._log_cms_codec_dlopen_error()
+                logger.warning(
+                    f"imagecodecs CMS codec unavailable on this build ({e}); falling back to the LUT-based ICC transform for this export"
+                )
+                return self._apply_color_management_u16_rgb(
+                    img_u16,
+                    working_color_space,
+                    color_space,
+                    output_icc_path,
+                    input_icc_path,
+                    lut_size=PROOF_LUT_SIZE,
+                )
             # imagecodecs outputs uint16 [0,65535] directly
             return result, self._get_target_icc_bytes(color_space, output_icc_path)
         except Exception as e:
             logger.error(f"CMS transformation failed: {e}")
             return img_u16, None
+
+    @staticmethod
+    def _log_cms_codec_dlopen_error() -> None:
+        """Log the real dlopen error behind a cms_transform ImportError, if any.
+
+        Best-effort diagnostic only, never raises: reproduces imagecodecs'
+        lazy import via ctypes.CDLL, which does not discard the OSError.
+        """
+        try:
+            codec_path = os.path.join(os.path.dirname(imagecodecs.__file__), "_cms.abi3.so")
+            ctypes.CDLL(codec_path)
+        except OSError as dlopen_error:
+            logger.warning(f"underlying dlopen error for imagecodecs' CMS codec: {dlopen_error}")
+        except Exception:
+            pass
 
     def apply_color_management(
         self,

@@ -321,6 +321,72 @@ def package_windows():
         raise
 
 
+# Every .so/.dylib under Contents/Frameworks known to link liblcms2.2.dylib.
+# See LIBLCMS2_DYLIB_COLLISION.md for how this list and fix_lcms2_dylib_collision()
+# were derived and verified.
+_LCMS2_CONSUMER_GLOBS = [
+    "PIL/_imagingcms*.so",
+    "rawpy/libraw_r*.dylib",
+    "imagecodecs/_cms.abi3.so",
+    "imagecodecs/_jpeg2k.abi3.so",
+    "libjxl_cms*.dylib",
+    "cv2/*/libjxl_cms*.dylib",
+]
+
+
+def fix_lcms2_dylib_collision():
+    """Repoint the canonical liblcms2.2.dylib at imagecodecs' own copy.
+
+    Raises if imagecodecs' own copy can't be found unambiguously, or if any
+    known consumer would be missing a symbol it needs from it — better a red
+    build than a silently shipped repeat of this bug. See
+    LIBLCMS2_DYLIB_COLLISION.md. Must run before codesign_macos_app() so the
+    corrected symlink is covered by the final signature.
+    """
+    frameworks = os.path.join("dist", f"{APP_NAME}.app", "Contents", "Frameworks")
+    canonical = os.path.join(frameworks, "liblcms2.2.dylib")
+    matches = glob.glob(os.path.join(frameworks, "imagecodecs", "*", "liblcms2.2.dylib"))
+    if len(matches) != 1:
+        raise RuntimeError(f"expected exactly one imagecodecs liblcms2.2.dylib under {frameworks}, found {matches}")
+    rel_target = os.path.relpath(matches[0], frameworks)
+    if os.path.islink(canonical) or os.path.exists(canonical):
+        os.remove(canonical)
+    os.symlink(rel_target, canonical)
+    print(f"Repointed {canonical} -> {rel_target} (imagecodecs' own liblcms2.2.dylib)")
+
+    exports = _nm_symbols(matches[0], defined=True)
+    gaps = []
+    for pattern in _LCMS2_CONSUMER_GLOBS:
+        for consumer in glob.glob(os.path.join(frameworks, pattern)):
+            needed = {s for s in _nm_symbols(consumer, defined=False) if s.startswith("_cms")}
+            missing = needed - exports
+            if missing:
+                gaps.append((consumer, sorted(missing)))
+    if gaps:
+        detail = "\n".join(f"  {os.path.relpath(c, frameworks)}: missing {m}" for c, m in gaps)
+        raise RuntimeError(f"imagecodecs' liblcms2.2.dylib is missing symbols other consumers need:\n{detail}")
+
+
+def _nm_symbols(path: str, *, defined: bool) -> set[str]:
+    """Return a Mach-O file's defined-exported (-gU) or undefined (-u) symbol names."""
+    flag = "-gU" if defined else "-u"
+    out = subprocess.run(["nm", flag, path], capture_output=True, text=True, check=True).stdout
+    if defined:
+        return {line.split()[-1] for line in out.splitlines() if line.strip()}
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def codesign_macos_app():
+    """Apply a fresh, consistent ad-hoc signature over the whole .app.
+
+    PyInstaller's own signing pass does not reliably reach every binary it
+    moves or rewrites under --collect-all.
+    """
+    app_path = os.path.join("dist", f"{APP_NAME}.app")
+    print(f"Re-signing {app_path} (ad-hoc, deep)...")
+    subprocess.run(["codesign", "--force", "--deep", "-s", "-", app_path], check=True)
+
+
 def package_macos():
     """Package the built application into a DMG with Applications symlink."""
     print(f"Packaging for macOS (DMG) version {VERSION}...")
@@ -387,6 +453,8 @@ def build():
     elif is_windows:
         package_windows()
     elif is_macos:
+        fix_lcms2_dylib_collision()
+        codesign_macos_app()
         package_macos()
 
 
