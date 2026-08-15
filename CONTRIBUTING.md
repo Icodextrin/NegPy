@@ -19,21 +19,20 @@ NegPy requires **Python 3.13+**. We use **uv** for environment and dependency ma
 ### 1. Prerequisites
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already.
 
-**Scanner support (optional):** NegPy's direct scanner integration uses SANE (libsane).
+**Scanner support (optional):**
 
-- **Linux** (Debian/Ubuntu):
-  ```bash
-  sudo pacman -S sane  # arch
-  sudo apt install libsane-dev  # debian/ubuntu
-  ```
+- **SANE** (Linux/macOS) — Coolscans and other SANE film scanners:
+  - **Linux** (Debian/Ubuntu):
+    ```bash
+    sudo pacman -S sane  # arch
+    sudo apt install libsane-dev  # debian/ubuntu
+    ```
+  - **macOS**:
+    ```bash
+    brew install sane-backends
+    ```
 
-- **macOS**:
-  ```bash
-  brew install sane-backends
-  ```
-
-- **Windows**: 
-Scanner support is not yet available on windows.
+- **Plustek USB** (Windows/macOS/Linux) — optional [pyopticfilm](https://github.com/jboneng/pyopticfilm) driver for OpticFilm 8200i SE (`uv sync --group plustek` or `pip install negpy[plustek]`). Windows installs `libusb-package` via pyopticfilm (bundled in release builds). On Windows, bind WinUSB with Zadig for USB id `07b3:1825` before scanning (vendor/SilverFast drivers conflict). See [docs/PLUSTEK_WINDOWS.md](docs/PLUSTEK_WINDOWS.md).
 
 
 ### 2. Python Environment

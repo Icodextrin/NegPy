@@ -537,6 +537,7 @@ def _caps_from_options(opt, device_id: str = "") -> ScannerCapabilities:
         sources=sources,
         max_area_mm=_detect_max_area(opt),
         auto_exposure=_detect_auto_exposure(opt),
+        autofocus="autofocus" in opt,
         adapter_frame_capacity=_detect_adapter_frame_capacity(opt),
         adapter_frame_control=_detect_adapter_frame_control(opt),
         can_eject=_detect_eject(opt),

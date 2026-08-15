@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
 
+from negpy.infrastructure.scanners.registry import DEFAULT_BACKEND_ID
+
 Rect = tuple[float, float, float, float]
 
 
@@ -8,7 +10,8 @@ class ScannerSettings:
     """Persisted scanner preferences, stored as JSON blob."""
 
     last_device_id: str = ""
-    backend: str = "sane"  # mirrors registry.DEFAULT_BACKEND_ID; keep in sync
+    backend: str = DEFAULT_BACKEND_ID
+
     dpi: int = 3600
     depth: int = 16
     capture_ir: bool = False

@@ -40,7 +40,7 @@ from negpy.desktop.workers.render import (
     ThumbnailUpdateTask,
     ThumbnailWorker,
 )
-from negpy.desktop.workers.scan_worker import BatchRequest, RollPreviewRequest, ScanRequest, ScanWorker
+from negpy.desktop.workers.scan_worker import BatchRequest, PrescanRequest, RollPreviewRequest, ScanRequest, ScanWorker
 from negpy.desktop.workers.library import LibrarySearchTask, LibrarySearchWorker
 from negpy.desktop.workers.hdr import HdrTask, HdrWorker
 from negpy.desktop.workers.stitch import StitchTask, StitchWorker
@@ -322,6 +322,9 @@ class AppController(QObject):
     scan_roll_preview_requested = pyqtSignal(RollPreviewRequest)
     scan_roll_preview_ready = pyqtSignal(object)  # one RollPreview per strip slot
     scan_roll_preview_finished = pyqtSignal()
+    scan_prescan_requested = pyqtSignal(PrescanRequest)
+    scan_prescan_ready = pyqtSignal(object)  # ScanResult from a low-DPI full-window preview
+    scan_prescan_error = pyqtSignal(str)
     capture_light_requested = pyqtSignal(int, int, int, int, str)
     capture_requested = pyqtSignal(CaptureRequest)
     capture_light_set = pyqtSignal(int, int, int, int)
@@ -668,6 +671,9 @@ class AppController(QObject):
         self.scan_roll_preview_requested.connect(self.scan_worker.run_roll_preview)
         self.scan_worker.roll_preview_ready.connect(self.scan_roll_preview_ready.emit)
         self.scan_worker.roll_preview_finished.connect(self.scan_roll_preview_finished.emit)
+        self.scan_prescan_requested.connect(self.scan_worker.run_prescan)
+        self.scan_worker.prescan_ready.connect(self.scan_prescan_ready.emit)
+        self.scan_worker.prescan_error.connect(self.scan_prescan_error.emit)
         self.capture_light_requested.connect(self.capture_worker.set_light)
         self.capture_requested.connect(self.capture_worker.run_capture)
         self.capture_worker.light_set.connect(self.capture_light_set.emit)
@@ -3029,6 +3035,11 @@ class AppController(QObject):
         scan_roll_preview_finished). No scan_started — preview is dialog-local."""
         self.scan_worker.prepare_scan()
         self.scan_roll_preview_requested.emit(req)
+
+    def start_prescan(self, req: PrescanRequest) -> None:
+        """Low-DPI full-window colour preview for crop setup (dialog-local)."""
+        self.scan_worker.prepare_scan()
+        self.scan_prescan_requested.emit(req)
 
     def eject_scanner(self, device_id: str) -> None:
         """Trigger the scanner's eject action on the worker thread."""

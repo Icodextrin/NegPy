@@ -61,7 +61,7 @@ params = [
     # Camera scanning: see collect_gphoto2_plugins() — the plugin trees need their
     # directory layout preserved, which --collect-all does not do.
     *([] if is_windows else ["--collect-all=gphoto2"]),
-    # pieusb scanner support (all platforms; it is the only backend on Windows).
+    # pieusb scanner support (all platforms).
     # libusb_package's own PyInstaller hook drops the bundled libusb at the bundle
     # root, but get_library_path() resolves it with importlib_resources against the
     # *package* directory — so without this it finds nothing and pyusb falls back to
@@ -69,6 +69,20 @@ params = [
     # lookup actually looks.
     "--hidden-import=pieusb",
     "--collect-all=libusb_package",
+    # Plustek / pyopticfilm: ship PyUSB + bundled libusb on Windows only.
+    # Linux/macOS use host libusb via PyUSB (same stack SANE needs).
+    *(
+        [
+            "--hidden-import=usb",
+            "--hidden-import=usb.core",
+            "--hidden-import=usb.backend.libusb1",
+            "--hidden-import=pyopticfilm",
+            "--collect-all=usb",
+            "--collect-all=pyopticfilm",
+        ]
+        if is_windows
+        else []
+    ),
     # Exclude unused modules
     # Metadata
     "--copy-metadata=imageio",

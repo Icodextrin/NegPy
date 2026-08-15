@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QSlider,
@@ -35,6 +36,8 @@ class ScanSidebar(QWidget):
         self._devices: list[ScannerDevice] = []
         self._scanning = False
         self._devices_loaded = False
+        self._caps_autofocus = False
+        self._caps_auto_exposure = False
         self._init_ui()
         self._connect_signals()
         install_wheel_guards(self)
@@ -42,13 +45,20 @@ class ScanSidebar(QWidget):
     # ── settings persistence ──────────────────────────────────────────
 
     def _load_settings(self) -> ScannerSettings:
+        from dataclasses import replace
+
         data = self.controller.session.repo.get_global_setting("scanner_settings", default={})
         if isinstance(data, dict) and data:
             try:
-                return ScannerSettings(**data)
+                settings = ScannerSettings(**data)
             except Exception:
-                pass
-        return ScannerSettings.defaults()
+                settings = ScannerSettings.defaults()
+        else:
+            settings = ScannerSettings.defaults()
+        # Drop backends that no longer ship on this platform (e.g. saved "sane" on Windows).
+        if settings.backend not in {bid for bid, _ in backend_choices()}:
+            settings = replace(settings, backend=DEFAULT_BACKEND_ID)
+        return settings
 
     def _save_settings(self) -> None:
         from dataclasses import asdict
@@ -124,23 +134,29 @@ class ScanSidebar(QWidget):
         self.ir_check = QCheckBox("IR")
         self.ir_check.setToolTip("Scan a separate infrared channel for dust detection")
 
-        depth_row = QHBoxLayout()
+        self.depth_row_widget = QWidget()
+        depth_row = QHBoxLayout(self.depth_row_widget)
         depth_row.setContentsMargins(0, 0, 0, 0)
         self.depth_combo = QComboBox()
         self.depth_combo.setToolTip("Bit depth")
         depth_row.addWidget(self.depth_combo, 1)
         depth_row.addWidget(self.ir_check)
-        self.form.addRow("Depth", depth_row)
+        self.depth_label = QLabel("Depth")
+        self.form.addRow(self.depth_label, self.depth_row_widget)
+        self.depth_combo.setVisible(False)
+        self.depth_label.setVisible(False)
 
         # Spanning rows (no label column) so the checkboxes sit at the left edge.
         self.autofocus_check = QCheckBox("Autofocus")
         self.autofocus_check.setChecked(True)
         self.autofocus_check.setToolTip("Autofocus before scanning (film is rarely perfectly flat)")
         self.form.addRow(self.autofocus_check)
+        self.autofocus_check.setVisible(False)
 
         self.ae_check = QCheckBox("Auto-exposure")
         self.ae_check.setToolTip("Meter exposure in hardware before the scan")
         self.form.addRow(self.ae_check)
+        self.ae_check.setVisible(False)
 
         # Scan exposure time (SANE `scan-exposure-time`), shown only when the
         # device reports a usable range. Slider in microseconds; label shows
@@ -198,6 +214,25 @@ class ScanSidebar(QWidget):
         self.scan_window_row_label.setVisible(False)
         self.scan_window_widget.setVisible(False)
         self.scan_window_status.setVisible(False)
+
+        # Prescan + crop (Plustek SE): low-DPI full window → interactive crop → scan_window.
+        self.prescan_widget = QWidget()
+        prescan_row = QHBoxLayout(self.prescan_widget)
+        prescan_row.setContentsMargins(0, 0, 0, 0)
+        self.prescan_btn = QPushButton("Prescan…")
+        self.prescan_btn.setToolTip("Scan a low-DPI preview and set the crop for the next scan")
+        self.prescan_clear_btn = QPushButton("Clear")
+        self.prescan_clear_btn.setFixedWidth(56)
+        self.prescan_clear_btn.setToolTip("Scan the full window instead of a crop")
+        prescan_row.addWidget(self.prescan_btn, 1)
+        prescan_row.addWidget(self.prescan_clear_btn)
+        self.prescan_label = QLabel("Prescan")
+        self.form.addRow(self.prescan_label, self.prescan_widget)
+        self.prescan_status = hint_label("")
+        self.form.addRow("", self.prescan_status)
+        self.prescan_label.setVisible(False)
+        self.prescan_widget.setVisible(False)
+        self.prescan_status.setVisible(False)
 
         self.fmt_combo = QComboBox()
         self.fmt_combo.addItems(["TIFF", "DNG"])
@@ -270,6 +305,8 @@ class ScanSidebar(QWidget):
         self.frame_to_spin.valueChanged.connect(self._on_frame_to_changed)
         self.scan_window_btn.clicked.connect(self._on_set_scan_window)
         self.scan_window_clear_btn.clicked.connect(self._on_clear_scan_window)
+        self.prescan_btn.clicked.connect(self._on_prescan)
+        self.prescan_clear_btn.clicked.connect(self._on_clear_prescan_crop)
 
         # Controller signals
         self.controller.scan_devices_ready.connect(self._on_devices_ready)
@@ -367,12 +404,21 @@ class ScanSidebar(QWidget):
             self.frame_label.setText("")
             self.dpi_combo.setEnabled(False)
             self.depth_combo.setEnabled(False)
+            self.depth_combo.setVisible(False)
+            self.depth_label.setVisible(False)
             self.ir_check.setEnabled(False)
             self.eject_btn.setVisible(False)
             self.frame_range_label.setVisible(False)
             self.frame_range_widget.setVisible(False)
             self.exposure_label.setVisible(False)
             self.exposure_row_widget.setVisible(False)
+            self.autofocus_check.setVisible(False)
+            self.ae_check.setVisible(False)
+            self.prescan_label.setVisible(False)
+            self.prescan_widget.setVisible(False)
+            self.prescan_status.setVisible(False)
+            self._caps_autofocus = False
+            self._caps_auto_exposure = False
             return
 
         caps = device.capabilities
@@ -415,7 +461,8 @@ class ScanSidebar(QWidget):
             else:
                 self.dpi_combo.setCurrentText(str(self._settings.dpi))
 
-        # Depth — default to the deepest supported when the saved value is absent
+        # Depth — shown only when the device offers more than one bit depth.
+        # Default to the deepest supported when the saved value is absent
         # (a saved 16 does not exist on a 14-bit LS-50; findData → -1 must not
         # leave the combo silently on index 0 = 8-bit).
         self.depth_combo.clear()
@@ -427,6 +474,9 @@ class ScanSidebar(QWidget):
                 idx = self.depth_combo.findData(max(caps.supported_depths))
             if idx >= 0:
                 self.depth_combo.setCurrentIndex(idx)
+        show_depth = len(caps.supported_depths) > 1
+        self.depth_combo.setVisible(show_depth)
+        self.depth_label.setVisible(show_depth)
 
         # IR
         self.ir_check.setEnabled(caps.ir_channel)
@@ -437,9 +487,20 @@ class ScanSidebar(QWidget):
             self.ir_check.setChecked(False)
             self.ir_check.setToolTip("IR scanning not supported by this device")
 
-        # Auto-exposure
-        self.ae_check.setEnabled(caps.auto_exposure)
-        if caps.auto_exposure:
+        # Autofocus / Auto-exposure — shown only when the device reports them.
+        self._caps_autofocus = bool(caps.autofocus)
+        self._caps_auto_exposure = bool(caps.auto_exposure)
+        self.autofocus_check.blockSignals(True)
+        self.autofocus_check.setVisible(self._caps_autofocus)
+        if self._caps_autofocus:
+            self.autofocus_check.setChecked(self._settings.autofocus)
+            self.autofocus_check.setToolTip("Autofocus before scanning (film is rarely perfectly flat)")
+        else:
+            self.autofocus_check.setChecked(False)
+        self.autofocus_check.blockSignals(False)
+
+        self.ae_check.setVisible(self._caps_auto_exposure)
+        if self._caps_auto_exposure:
             self.ae_check.setChecked(self._settings.auto_exposure)
             self.ae_check.setToolTip("Meter exposure in hardware before the scan")
         else:
@@ -489,6 +550,13 @@ class ScanSidebar(QWidget):
             self.scan_window_btn.setText("Preview strip…")
             self.scan_window_btn.setToolTip("Preview each frame, set a window per frame, and pick which frames to scan")
             self._update_scan_window_status()
+
+        show_prescan = bool(caps.prescan)
+        self.prescan_label.setVisible(show_prescan)
+        self.prescan_widget.setVisible(show_prescan)
+        self.prescan_status.setVisible(show_prescan)
+        if show_prescan:
+            self._update_prescan_status()
 
         self.dpi_combo.blockSignals(False)
         self.depth_combo.blockSignals(False)
@@ -559,6 +627,47 @@ class ScanSidebar(QWidget):
         self.settings = replace(self._settings, scan_window=None, frame_windows={}, selected_frames=())
         self._update_scan_window_status()
 
+    def _on_prescan(self) -> None:
+        from dataclasses import replace
+
+        from negpy.desktop.view.widgets.prescan_dialog import PrescanCropDialog
+
+        device = self._current_device()
+        if device is None or not device.capabilities.prescan:
+            return
+        dialog = PrescanCropDialog(
+            self.controller,
+            device,
+            initial_window=self._settings.scan_window,
+            parent=self,
+        )
+        if dialog.exec():
+            self.settings = replace(self._settings, scan_window=dialog.scan_window())
+            self._update_prescan_status()
+            self._save_settings()
+
+    def _on_clear_prescan_crop(self) -> None:
+        from dataclasses import replace
+
+        self.settings = replace(self._settings, scan_window=None)
+        self._update_prescan_status()
+        self._save_settings()
+
+    def _update_prescan_status(self) -> None:
+        from negpy.infrastructure.scanners.params import scan_window_to_area
+
+        device = self._current_device()
+        area = (
+            scan_window_to_area(self._settings.scan_window, device.capabilities.max_area_mm)
+            if device and self._settings.scan_window
+            else None
+        )
+        if area is None:
+            self.prescan_status.setText("Full window")
+        else:
+            tl_x, tl_y, br_x, br_y = area
+            self.prescan_status.setText(f"Crop {br_x - tl_x:.1f} × {br_y - tl_y:.1f} mm")
+
     def _update_scan_window_status(self) -> None:
         from negpy.infrastructure.scanners.params import scan_window_to_area
 
@@ -612,8 +721,8 @@ class ScanSidebar(QWidget):
         dpi = int(self.dpi_combo.currentData() or self.dpi_combo.currentText() or 3600)
         depth = int(self.depth_combo.currentData() or 16)
         capture_ir = self.ir_check.isEnabled() and self.ir_check.isChecked()
-        autofocus = self.autofocus_check.isChecked()
-        auto_exposure = self.ae_check.isEnabled() and self.ae_check.isChecked()
+        autofocus = self._caps_autofocus and self.autofocus_check.isChecked()
+        auto_exposure = self._caps_auto_exposure and self.ae_check.isChecked()
         pattern = self.pattern_edit.text().strip() or '{{ date }}_{{ "%03d" % seq }}'
         fmt = self.fmt_combo.currentText()
 
@@ -701,7 +810,11 @@ class ScanSidebar(QWidget):
     def _on_scan_error(self, msg: str) -> None:
         self.set_scanning(False)
         self.progress_bar.setVisible(False)
-        self.status_label.setText(f"Error: {msg}")
+        text = msg or "Unknown scan error"
+        self.status_label.setText(f"Error: {text}")
+        # Unsupported pyOpticfilm models: status alone is easy to miss.
+        if "cannot scan with pyOpticfilm" in text:
+            QMessageBox.warning(self, "Scan failed", text)
 
     @pyqtSlot(bool)
     def _on_ejected(self, triggered: bool) -> None:
@@ -727,9 +840,11 @@ class ScanSidebar(QWidget):
             self.scan_btn.setIcon(qta.icon("fa5s.stop", color=THEME.text_primary))
             self.progress_bar.setVisible(True)
             self.progress_bar.setValue(0)
+            self.prescan_btn.setEnabled(False)
         else:
             self.scan_btn.setText(" Scan")
             self.scan_btn.setIcon(qta.icon("fa5s.camera-retro", color=THEME.text_primary))
+            self.prescan_btn.setEnabled(True)
 
     def _update_settings_from_ui(self) -> None:
         dpi_text = self.dpi_combo.currentData() or self.dpi_combo.currentText()
@@ -756,8 +871,8 @@ class ScanSidebar(QWidget):
             dpi=dpi,
             depth=depth,
             capture_ir=self.ir_check.isChecked() and self.ir_check.isEnabled(),
-            autofocus=self.autofocus_check.isChecked(),
-            auto_exposure=self.ae_check.isChecked() and self.ae_check.isEnabled(),
+            autofocus=self._caps_autofocus and self.autofocus_check.isChecked(),
+            auto_exposure=self._caps_auto_exposure and self.ae_check.isChecked(),
             exposure_time_us=(self.exposure_slider.value() if self.exposure_row_widget.isVisible() else None),
             frame_from=self.frame_from_spin.value(),
             frame_to=self.frame_to_spin.value(),
@@ -765,21 +880,3 @@ class ScanSidebar(QWidget):
             output_format=self.fmt_combo.currentText(),
             filename_pattern=self.pattern_edit.text().strip() or '{{ date }}_{{ "%03d" % seq }}',
         )
-
-
-class _ScanUnsupportedPlaceholder(QWidget):
-    """Shown on Windows where SANE is not available."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        # No layout alignment and no QSS padding: either one breaks the wrapped
-        # QLabel's height-for-width negotiation and clips the text — the label
-        # must be stretched to full width so it can report its wrapped height.
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
-
-        label = QLabel("Scanner support not yet available on Windows.")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setWordWrap(True)
-        label.setStyleSheet(f"color: {THEME.text_muted}; font-size: {THEME.font_size_base}px;")
-        layout.addWidget(label)
