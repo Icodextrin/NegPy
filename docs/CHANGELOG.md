@@ -1,5 +1,18 @@
 # Change Log
 
+## 0.51.1
+
+- New: **Before/After is a draggable split** — the baseline stays on the left of a divider you drag, the edit on the right, both live while you work, instead of a flash of the baseline that dropped back on the next edit.
+- New: **A half-frame scan renders as a diptych with the split off** — turning the mode off no longer hides the two halves' saved edits; each half renders under its own config and the two are joined back into the original frame. Read-only, and exports as one `-DIPTYCH` file.
+- Change: **Reverse Scroll Zoom sits in the canvas toolbar overflow menu** — it was a checkbox in the Customize Shortcuts dialog that only saved on OK. It now applies on click and can be given a key.
+- Fix: **Thumbnail generation no longer crashes or exhausts memory** — a folder of scanner DNGs could segfault on an embedded bitmap thumbnail, and generating a large folder's thumbnails could grow until the kernel killed the app.
+- Fix: **Linear Output follows the Export panel's destination rules** — "Same as source", "Subfolder of source" and the filename template were ignored, and the Destination section was hidden under the Linear intent. An unset export path also made Export do nothing without a message. @seanharding
+- Fix: **A render that lands after you leave its frame is dropped** — a late render repainted the canvas with the wrong picture on CPU, blacked it out on GPU, and left the histogram, densitometer and UV grid describing the frame you had left. @seanharding
+- Fix: **RGB triplet mode no longer opens solid red** — an assembled triplet inherited the red exposure's saved normalization bounds, measured when green and blue held only sensor leak, so those two channels inverted to black. @seanharding
+- Fix: **File pickers open in a folder related to the work** — an empty row of the Edit RGB Triplet dialog, the flat-field reference picker and the three sensor calibration bands started at the root of the disk; they now start beside their siblings or at the last opened folder. @seanharding
+- Fix: **An unusable user directory is reported, not a Qt abort** — a path NegPy cannot create killed the process with "Must construct a QApplication before a QWidget". It now names the directory, the errno and what to change. A leading `~` in `NEGPY_USER_DIR` is expanded. @seanharding
+- Fix: **Cancel or X in the half-frame dialog reverts the toggle** — the switch stayed on after you dismissed the dialog. @emre155
+
 ## 0.51.0
 
 - New: **Plustek OpticFilm 8200i SE over USB** — a native backend drives the scanner directly, no SANE, and the Scan tab is now enabled on Windows. Pre-scan with a crop box, two-pass IR aligned to the RGB scan, and Autofocus, Auto-exposure and bit depth shown only where the scanner reports them. The driver is its own project, [pyopticfilm](https://github.com/jboneng/pyopticfilm). @jboneng
