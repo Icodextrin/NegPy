@@ -371,6 +371,48 @@ class TestDiptychAsset:
         assert assets[1]["diptych"] is False
         assert "diptych" not in assets[2]  # a half is never its own diptych
 
+    def test_a_composite_keeps_its_primarys_half_edits_out(self):
+        from negpy.desktop.controller import AppController
+
+        # An RGB triplet is {**red, green_path, blue_path}, so it carries the red
+        # exposure's plain hash. Half edits left on that file by an earlier half-frame
+        # session must not make the assembled frame render as a diptych.
+        ctrl = self._controller({"ha#1": WorkspaceConfig(), "ha#2": WorkspaceConfig()})
+        triplet = {"path": "/p/a_r.cr3", "hash": "ha", "green_path": "/p/a_g.cr3", "blue_path": "/p/a_b.cr3"}
+        assets = [triplet, {"path": "/p/b.tif", "hash": "ha"}]
+
+        AppController._mark_diptychs(ctrl, assets)
+        assert triplet["diptych"] is False
+        assert assets[1]["diptych"] is True  # same hash, but a plain scan
+
+        assert AppController.diptych_pair(ctrl, {"path": "/p/a_r.cr3", "hash": "ha", "green_path": "/p/a_g.cr3"}) is None
+        assert AppController.diptych_pair(ctrl, {"path": "/p/a.tif", "hash": "ha", "stitch_paths": ["/p/x.tif"]}) is None
+        assert AppController.diptych_pair(ctrl, {"path": "/p/a.tif", "hash": "ha", "hdr_paths": ["/p/x.tif"]}) is None
+
+    def test_metering_a_half_does_not_create_its_edit(self):
+        from negpy.desktop.controller import AppController
+
+        # Looking at a half renders it, which meters it. That measurement must not file a
+        # settings row of its own: the row is what later says the scan is a diptych, so a
+        # Half Frame toggle on and straight off would leave the frame stuck as one.
+        ctrl = self._controller({})
+        ctrl.state = MagicMock()
+        ctrl._measured_half_rows = set()
+
+        ctrl.state.current_file_hash = "ha"  # whole scan: always persists
+        assert AppController._may_persist_measured_bounds(ctrl) is True
+
+        ctrl.session.repo.load_file_settings.return_value = None
+        ctrl.state.current_file_hash = "ha#1"  # unedited half
+        assert AppController._may_persist_measured_bounds(ctrl) is False
+
+        ctrl.session.repo.load_file_settings.return_value = WorkspaceConfig()
+        ctrl.state.current_file_hash = "ha#2"  # a half the user did edit
+        assert AppController._may_persist_measured_bounds(ctrl) is True
+        ctrl.session.repo.load_file_settings.reset_mock()
+        assert AppController._may_persist_measured_bounds(ctrl) is True
+        ctrl.session.repo.load_file_settings.assert_not_called()  # memoized
+
     def test_task_stamps_the_saved_split_geometry(self):
         from negpy.desktop.controller import AppController
 
