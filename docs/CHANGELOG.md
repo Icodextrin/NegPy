@@ -1,5 +1,17 @@
 # Change Log
 
+## 0.52.0
+
+- New: **Contrast Mask** — the darkroom's unsharp mask in the Tone panel: a blurred low-gamma sandwich that compresses or opens the global range while fine detail passes through. Works both ways, and its reach is drawn as a violet band on the H&D chart.
+- New: **Tilt and Swing** — perspective correction as the enlarger's easel movements; tilt straightens converging verticals, swing converging horizontals. Nothing before this moved a converging line.
+- New: **Unsplit diptych** — right-click a split half-frame scan in the filmstrip to get one plain frame back. Destructive and behind a confirm; both halves' edits, undo history and work prints go.
+- New: **Manual update check** — a button beside the version number runs the release check on demand, instead of once per launch behind an unbound shortcut.
+- New: **Nix flake** — build and run NegPy with Nix. @activexray
+- Fix: **Auto Crop exports the crop you saw** — detection ran inside every render, so a preview and a full-resolution export could find different edges. The rect is now detected once and stored, the crop tool opens on it, and dragging it takes ownership. @seanharding
+- Fix: **A composite frame is never a diptych** — an RGB Scan triplet, a stitch or an HDR merge could render split down the middle and half width if its file had been worked on as two halves earlier. Turning Half Frame on and off also left an untouched frame stuck that way. @seanharding
+- Fix: **Only a scan you split comes back split** — a stale `#1`/`#2` settings row was enough to declare any whole scan a diptych, at half width with a dead controls panel. Existing pairs render whole again and keep their edits.
+- Fix: **Windows self update survives a non-ASCII path** — the swap script garbled under a profile name with an accented character, so nothing installed and the app did not restart. @MohammedAlkindi
+
 ## 0.51.1
 
 - New: **Before/After is a draggable split** — the baseline stays on the left of a divider you drag, the edit on the right, both live while you work, instead of a flash of the baseline that dropped back on the next edit.
