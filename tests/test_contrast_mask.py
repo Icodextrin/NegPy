@@ -204,12 +204,12 @@ class TestContrastMaskParity(unittest.TestCase):
             self.skipTest("GPU engine not initialised")
         self.img = _wide_range_negative(96, 144)
 
-    def _render(self, settings: WorkspaceConfig, tag: str, prefer_gpu: bool) -> np.ndarray:
+    def _render(self, settings: WorkspaceConfig, tag: str, prefer_gpu: bool, size_ref: float = 0.0) -> np.ndarray:
         result, _ = self.processor.run_pipeline(
             self.img.copy(),
             settings,
             tag,
-            render_size_ref=float(max(self.img.shape[:2])),
+            render_size_ref=size_ref or float(max(self.img.shape[:2])),
             prefer_gpu=prefer_gpu,
             readback_metrics=False,
         )
@@ -218,7 +218,9 @@ class TestContrastMaskParity(unittest.TestCase):
 
     def _assert_match(self, settings: WorkspaceConfig, tag: str):
         cpu = self._render(settings, tag, prefer_gpu=False)
-        gpu = self._render(settings, tag, prefer_gpu=True)
+        # render_size_ref sizes the paper and only the GPU honours it, so a cropped frame
+        # needs the crop's own long edge to land the two on the same grid.
+        gpu = self._render(settings, tag, prefer_gpu=True, size_ref=float(max(cpu.shape[:2])))
         self.assertEqual(cpu.shape, gpu.shape)
         self.assertLess(float(np.mean(np.abs(cpu - gpu))), 0.01)
         self.assertLess(float(np.max(np.abs(cpu - gpu))), 0.04)
@@ -228,6 +230,14 @@ class TestContrastMaskParity(unittest.TestCase):
 
     def test_cpu_gpu_match_negative_gamma(self):
         self._assert_match(_bw_settings(grade=60.0, contrast_mask=-0.35), "contrast-mask-parity-neg")
+
+    def test_cpu_gpu_match_cropped(self):
+        # The only case where the shader's mask rect is not the whole frame.
+        s = _bw_settings(grade=60.0, contrast_mask=0.5)
+        self._assert_match(
+            replace(s, geometry=replace(s.geometry, crop_rect=(0.2, 0.15, 0.65, 0.7))),
+            "contrast-mask-parity-crop",
+        )
 
     def test_slider_uploads_no_texture(self):
         base = _bw_settings(grade=60.0, contrast_mask=0.5)
