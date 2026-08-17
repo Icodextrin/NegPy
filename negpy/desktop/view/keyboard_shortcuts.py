@@ -113,6 +113,8 @@ class ShortcutManager:
             "toggle_keep": lambda: controller.session.toggle_mark("keeper"),
             "hdr_merge": controller.request_hdr_merge_selected,
             "hdr_unmerge": controller.request_unmerge_hdr,
+            # The view method, not the controller's: it carries the confirm the deletion needs.
+            "half_frame_undiptych": self.window.session_panel.file_browser.prompt_undiptych,
             "toggle_reject": lambda: controller.session.toggle_mark("excluded"),
             "toggle_compare": controller.toggle_compare,
             "rotate_ccw": lambda: toolbar.rotate(1),

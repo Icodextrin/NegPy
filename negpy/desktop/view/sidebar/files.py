@@ -1139,10 +1139,25 @@ class FileBrowser(QWidget):
             if active.get("hdr_paths"):
                 self._add_hdr_anchor_menu(menu, active)
                 menu.addAction("Unmerge exposures").triggered.connect(lambda: self.controller.request_unmerge_hdr())
+            if active.get("diptych"):
+                menu.addAction("Unsplit diptych").triggered.connect(self.prompt_undiptych)
         menu.addSeparator()
         unload_label = "Unload Selected" if multi else "Unload"
         menu.addAction(unload_label).triggered.connect(self._on_remove_from_menu)
         return menu
+
+    def prompt_undiptych(self) -> None:
+        """Confirm before the halves' edits go, then hand the frame back as one plain scan."""
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Unsplit diptych")
+        box.setText("Turn this diptych back into one plain frame?")
+        box.setInformativeText("Both halves' edits are deleted. Splitting the scan again starts from defaults.")
+        unsplit = box.addButton("Unsplit", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is unsplit:
+            self.controller.request_undiptych()
 
     def _add_hdr_merge_action(self, menu, state) -> None:
         """Merging is for transparencies, so the action follows the film process.

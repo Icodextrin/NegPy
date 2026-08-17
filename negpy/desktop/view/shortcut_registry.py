@@ -25,6 +25,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     # fire activatedAmbiguously and kills both actions.
     "hdr_merge": ShortcutEntry("", "Merge selected exposures into one HDR frame", "Triage"),
     "hdr_unmerge": ShortcutEntry("", "Unmerge an HDR frame back into its exposures", "Triage"),
+    "half_frame_undiptych": ShortcutEntry("", "Unsplit a diptych back into one plain frame", "Triage"),
     "toggle_compare": ShortcutEntry("\\", "Before/after split (auto baseline)", "Tools"),
     "rotate_cw": ShortcutEntry("]", "Rotate 90° CW", "Geometry"),
     "rotate_ccw": ShortcutEntry("[", "Rotate 90° CCW", "Geometry"),
