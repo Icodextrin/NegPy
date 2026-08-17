@@ -221,6 +221,8 @@ Pinned above the tabs, this is your feedback while printing. Drag the divider to
 
 The chart is the paper characteristic (H&D) curve NegPy is printing through right now. It models how a sheet of photographic paper responds, and it is not a curves editor. Left to right is **negative density**, the exposure the paper receives, so dense parts of the negative (the scene's highlights) sit to the right. Bottom to top is the **print tone** that comes out. A steeper curve means more contrast, which is what Grade moves. The flattening at each end is the toe (shadows) and shoulder (highlights), where the paper runs out of range.
 
+With a **Contrast Mask** dialled in, a violet band opens between the curve and a dashed edge. The mask shifts each pixel by how far its own value sits from its blurred surroundings, so there is no single curve for it: a large flat area prints on the dashed edge, fine detail prints on the solid curve, and everything else falls between. The band is the mask's reach. Dodge/burn, local grade and CLAHE are spatial in the same way and are deliberately absent from the chart, which plots the global curve.
+
 The crosshair marks the **pivot**, the density the curve rotates around when you change contrast, so the midtone stays put. While you drag a slider, a faint **ghost** of the previous curve stays behind for comparison. If cast removal pulls the channels apart you get three separate R/G/B traces instead of one grey curve, and that spread *is* the color correction.
 
 #### The two histograms
@@ -435,6 +437,10 @@ Where the frame gets its final shape: what is inside the print, and whether it s
 
 *   **Fine Rotation** (±45°): free rotation for tilted scans, in sub-degree steps (positive is clockwise). Applied after auto-crop so the frame stays axis-aligned.
 *   **Straighten** tool (ruler): draw a line along a horizon or vertical edge and NegPy rotates to make it level or plumb.
+*   **Tilt** (±15%): tip the easel about a horizontal axis to straighten converging verticals, the building that leans back because the camera pointed up. Positive stretches the top edge. The unit is per-cent of the frame, what you would measure on the easel, not a tilt angle: the same tilt keystones differently at every enlargement.
+*   **Swing** (±15%): the same movement about a vertical axis, for converging horizontals. A wall shot from one side, or a copy stand not square to the film. Positive stretches the left edge.
+
+    Both replicate a wedge along the squeezed edge, as Fine Rotation does; crop it off. Crop before correcting if you can, because the meters read the corrected frame: on an uncropped scan a big correction pulls rebate and surround into the metered area and the print darkens.
 
 <!-- panel:flatfield -->
 ### 5.2 Flat Field: even out the light
@@ -489,6 +495,13 @@ The paper's response. A **Global / R / G / B** selector at the top scopes most c
 
     These two also work in Transparency with **Normalize off**, on the same tones (the centres are mapped by position on each curve's own scale, not by raw density), and there they are the only mid-sparing controls: Shadows Density opens the quarter-tone with the highlights unmoved, where Grade and Toe drag the whole scale with them and cost the highlights.
 *   **Shadows Grade** / **Highlights Grade** (split grade, ±50 ISO-R): rotate contrast locally in the deep shadows or highlights, the digital equivalent of split-grade printing.
+*   **Contrast Mask** (±0.5, hidden in Transparency): sandwich the negative with a blurred, low-contrast mask, as the darkroom does with a mask film and a spacer. Densities add, so the mask's own polarity decides which way the range goes, and its gamma decides how far. The value is that gamma, signed.
+
+    Positive is the ordinary masking case: a blurred positive, contact-printed straight off the negative, so it is dense where the negative is thin. That squeezes the range by (1 − gamma) and a harder grade then fits the paper, while the blur keeps fine detail out of the squeeze. Use it on a scene too contrasty for the grade you want, then bring Grade back down in R. Past about 0.4 a soft halo appears along strong edges, as it does on a masked print.
+
+    Negative is a mask of the same polarity as the negative, dense where the negative is dense, which stretches the range by (1 + gamma) instead. The broad tones expand while grain and texture stay put, where a harder Grade steepens both together. It also works on a negative too flat for Grade, whose slope has bottomed out. Past about −0.4 highlights start to clip, and the Analysis panel's Clipping row says so.
+
+    It reads only your crop. A masking film is neutral, so there is no per-layer trim and the slider greys out in R/G/B mode.
 *   **Dye Separation** (0.5 to 1.5, hidden in B&W Negative): saturation in density space. It pushes the print's three dye densities apart *before* the positive is decoded, in the same matrix the paper's own dye crosstalk uses, so it responds to the paper profile you picked and eases off automatically where the curve is already compressed at toe and shoulder, instead of forcing color into tones that have none left to give. Below 1.0 it pulls the dyes together toward neutral. 1.0 is off. Contrast this with **Chroma** in the Color tab, which scales color evenly after decode.
 *   **Separation Damping** (0 to 1, hidden in B&W Negative): decides *where* the Dye Separation push lands, rather than adding a push of its own. At 0 every color gets the same treatment. Turn it up and muted color keeps the full push while color that is already saturated gets the opposite, so a hard push puts color into the tones that had none instead of driving the strongest colors until they flatten into a slab. Below 1.0 separation it mirrors: pastels go grey while the vivid colors survive. It is **dead at Dye Separation 1.0**, where the slider greys out, because it has no look of its own. This is not the same as backing Dye Separation off: a lower value takes color from *everything*, including tones that had little to start with, where turning damping up takes it only from the colors that already have plenty.
 

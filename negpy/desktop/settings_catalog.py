@@ -96,6 +96,8 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
     ("Rotation", (
         _row("Rotation", "geometry", "rotation"),
         _row("Fine Rotation", "geometry", "fine_rotation"),
+        _row("Easel Tilt", "geometry", "converge_v"),
+        _row("Easel Swing", "geometry", "converge_h"),
         _row("Flip Horizontal", "geometry", "flip_horizontal"),
         _row("Flip Vertical", "geometry", "flip_vertical"),
     )),
@@ -124,6 +126,7 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         _row("Dye Separation", "exposure", "dye_separation"),
         _row("Dye Separation Trim", "exposure", "dye_separation_trim_red", "dye_separation_trim_green", "dye_separation_trim_blue", channels="RGB"),
         _row("Separation Damping", "exposure", "separation_damping"),
+        _row("Contrast Mask", "exposure", "contrast_mask"),
         _row("Auto Exposure", "exposure", "auto_exposure"),
         _row("Auto Contrast", "exposure", "auto_normalize_contrast"),
         _row("Paper Profile", "exposure", "paper_profile"),
