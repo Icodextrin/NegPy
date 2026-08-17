@@ -1996,12 +1996,10 @@ def has_manual_crop(geometry: GeometryConfig) -> bool:
 
 
 def autocrop_detection_key(geometry: GeometryConfig) -> str:
-    """
-    Everything border detection reads, as one comparable string.
+    """Everything border detection reads, as one comparable string.
 
-    A resolved auto crop stays valid only while this is unchanged. Crop Offset is absent
-    on purpose: it is applied to the stored rect on every render, so moving that slider
-    must not throw the detection away.
+    A resolved auto crop stays valid while this is unchanged. Crop Offset is absent: it is
+    applied to the stored rect on every render, so it must not throw the detection away.
     """
     return "|".join(
         str(part)
@@ -2022,20 +2020,16 @@ def resolve_autocrop_rect(
     geometry: GeometryConfig,
     preview_size: float,
 ) -> Optional[Tuple[float, float, float, float]]:
-    """
-    Detects the auto crop once and returns it as a normalized rect in transformed-image
-    space — the space GeometryConfig.crop_rect is stored in, and the space the canvas
-    overlay draws in.
+    """Detect the auto crop and return a normalized rect in transformed-image space, as
+    GeometryConfig.crop_rect stores it and the canvas overlay draws it.
 
-    The one place border detection is reached from during a render. The caller freezes
-    the result into the config, so an edit is detected once and every later render of it,
-    at any resolution, crops identically. Detection runs on a copy normalized to
-    AUTOCROP_DETECT_RES and replays the GeometryProcessor transform order
-    (rot90 -> flips -> fine rotation) on it.
+    The only border detection a render reaches; the caller freezes the result, so every
+    later render of the edit crops identically at any resolution. Runs on a copy normalized
+    to AUTOCROP_DETECT_RES, replaying the GeometryProcessor transform order
+    (rot90 -> flips -> fine rotation).
 
-    The rect excludes Crop Offset: that slider applies to any crop, auto or manual, and
-    get_manual_rect_coords adds it back on every render. Only the 2 px baseline margin
-    is baked in. Returns None when the buffer is too small to detect on.
+    The rect excludes Crop Offset, which get_manual_rect_coords adds back on every render;
+    only the 2 px baseline margin is baked in. None when the buffer is too small.
     """
     h, w = img.shape[:2]
     det_s = min(1.0, AUTOCROP_DETECT_RES / max(h, w))

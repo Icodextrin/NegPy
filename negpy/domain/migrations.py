@@ -35,9 +35,7 @@ KEY_RENAMES: Dict[str, str] = {
     "density_saturation_trim_green": "dye_separation_trim_green",
     "density_saturation_trim_blue": "dye_separation_trim_blue",
     "use_colour_average": "use_color_average",
-    # Auto and manual crops converged on one rect: auto_crop_enabled now means "this rect
-    # came from Auto", and an old save carrying True with no rect lands in the armed state,
-    # so it resolves on the next render exactly as it used to detect on every render.
+    # An old save with True and no rect lands armed, so it resolves on the next render.
     "manual_crop_rect": "crop_rect",
     "auto_crop_enabled": "crop_from_auto",
 }

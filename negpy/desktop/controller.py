@@ -2186,8 +2186,7 @@ class AppController(QObject):
         continuous adjustment, not a one-shot drag-then-close."""
         if self.state.active_tool != ToolMode.CROP_MANUAL:
             return
-        # Dragging the handles takes ownership of the rect, auto-detected or not: nothing
-        # re-arms detection over an edit the user has framed by hand.
+        # A drag takes ownership of the rect, auto or not, so nothing re-detects over it.
         new_geo = replace(
             self.state.config.geometry,
             crop_rect=(
@@ -2266,9 +2265,8 @@ class AppController(QObject):
             return
         new_geo = replace(geom, autocrop_ratio=ratio)
 
-        # An auto rect is left alone: the ratio is part of its detection key, so the next
-        # render re-detects under the new one. The frame Auto finds at 5:4 is not the 3:2
-        # frame shrunk to fit.
+        # An auto rect re-detects under the new ratio (it is in the detection key); the
+        # frame Auto finds at 5:4 is not the 3:2 frame shrunk to fit.
         rect = None if geom.crop_from_auto else geom.crop_rect
         img = self.state.preview_raw
         if rect is not None and img is not None:
@@ -2334,8 +2332,8 @@ class AppController(QObject):
     def apply_auto_crop(self) -> None:
         """Arm Auto Crop: clear the rect and let the next render detect one.
 
-        The render reports the rect it found and _on_render_finished freezes it into the
-        edit, so the crop the user is looking at is the crop that gets exported."""
+        _on_render_finished freezes the rect that render found into the edit, so the
+        exported crop is the one on screen."""
         # Autocrop supersedes a manual crop in progress: leave the tool.
         if self.state.active_tool == ToolMode.CROP_MANUAL:
             self.state.active_tool = ToolMode.NONE
@@ -4749,13 +4747,9 @@ class AppController(QObject):
     def _freeze_resolved_auto_crop(self, metrics: Dict[str, Any]) -> None:
         """Store the crop this render detected, so nothing detects it a second time.
 
-        Without this the crop is re-derived per render and a preview and its export can
-        disagree — the detector reads a 1600 px preview buffer and a full-res export, and
-        on a borderless frame those do not always find the same edge.
-
-        No render is requested: the rect is exactly what was just painted. The key guards
-        the gap between the render starting and this landing — change the ratio mid-flight
-        and the result is dropped, because a render is already queued under the new one.
+        No render is requested: the rect is what was just painted. The key guards the gap
+        between the render starting and this landing, so a ratio change mid-flight drops
+        the result, which a queued render then re-detects.
         """
         rect = metrics.get("autocrop_resolved_rect")
         if rect is None:
@@ -4766,8 +4760,7 @@ class AppController(QObject):
         if geom.crop_rect == rect and geom.crop_detect_key == metrics["autocrop_resolved_key"]:
             return
         new_geo = replace(geom, crop_rect=tuple(float(v) for v in rect), crop_detect_key=metrics["autocrop_resolved_key"])
-        # record_history=False: this is the tail of the Auto press the user already made,
-        # not a second edit to undo past.
+        # record_history=False: tail of the Auto press, not a second edit to undo past.
         self.session.update_config(replace(self.state.config, geometry=new_geo), persist=True, render=False, record_history=False)
         self.config_updated.emit()
 

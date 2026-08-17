@@ -116,26 +116,16 @@ class GeometryConfig:
     # 1.0 bites into the picture. Image mode only.
     autocrop_rebate_trim: float = 1.0
 
-    # The crop, always one normalized rect in transformed-image space, whoever drew it.
-    # `crop_from_auto` records where it came from and doubles as Auto Crop's armed state:
-    #
+    # One normalized rect in transformed-image space, auto or manual. `crop_from_auto`
+    # doubles as Auto Crop's armed state:
     #   None + False  no crop
-    #   None + True   Auto Crop on, not yet resolved — the next render detects the rect
-    #                 and the controller freezes it here
-    #   rect + True   a resolved auto crop
-    #   rect + False  a manual crop (or an auto crop the user has since dragged)
-    #
-    # Detection never runs twice on the same edit, so preview and export cannot disagree
-    # about where the frame is. Anything detection depends on (ratio, mode, rebate trim,
-    # orientation) re-arms by clearing the rect, and the crop handles take ownership by
-    # clearing the flag.
+    #   None + True   armed: the next render detects a rect, the controller freezes it here
+    #   rect + True   resolved auto crop
+    #   rect + False  manual crop (or an auto crop since dragged)
     crop_rect: Optional[Tuple[float, float, float, float]] = None
     crop_from_auto: bool = False
-    # What the auto rect was detected under (autocrop_detection_key). Re-arming is a
-    # comparison, not something every control that feeds detection has to remember to do:
-    # change the ratio, the mode, the rebate trim or the orientation and the key stops
-    # matching, so the next render re-detects. Empty for a manual rect, which nothing
-    # invalidates.
+    # autocrop_detection_key the auto rect was found under; a mismatch re-detects on the
+    # next render. Empty for a manual rect, which nothing invalidates.
     crop_detect_key: str = ""
 
     def __post_init__(self) -> None:

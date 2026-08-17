@@ -100,16 +100,13 @@ _JXL_COLOR = {
 def _resolve_armed_autocrop(
     img: np.ndarray, settings: WorkspaceConfig
 ) -> Tuple[WorkspaceConfig, Optional[Tuple[Tuple[float, float, float, float], str]]]:
-    """Turns an armed Auto Crop into a concrete rect, once, before either engine runs.
+    """Turn an armed Auto Crop into a rect, once, before either engine runs.
 
-    Armed = crop_from_auto with either no rect yet (a fresh Auto press, or an edit saved
-    before the two crops converged on one field) or one detected under a stale key. Returns
-    the settings this render should use, and the (rect, key) worth freezing — None when
-    there was nothing to resolve.
+    Armed = crop_from_auto with no rect yet, or a rect under a stale key. Returns the
+    settings for this render plus the (rect, key) to freeze, or None if nothing resolved.
 
-    Detection lives here rather than inside the engines on purpose. Reached per render, it
-    ran on whatever buffer that render held — a 1600 px preview against a full-res export —
-    and the two disagreed about where the frame was.
+    Detection stays out of the engines: run per render, it reads whatever buffer that
+    render holds, and a preview and a full-res export can find different frame edges.
     """
     geom = settings.geometry
     if not geom.crop_from_auto:
@@ -530,9 +527,8 @@ class ImageProcessor:
         )
         if metrics:
             context.metrics.update(metrics)
-        # The crop this render detected, for the controller to freeze into the edit. Only
-        # present on the render that resolved it; every later one reads the stored rect. The
-        # key rides along so a freeze that lands after the user has moved on is discarded.
+        # The crop this render detected, for the controller to freeze into the edit. The key
+        # rides along so a freeze that lands after the user moved on is discarded.
         if resolved_crop is not None:
             context.metrics["autocrop_resolved_rect"] = resolved_crop[0]
             context.metrics["autocrop_resolved_key"] = resolved_crop[1]
@@ -861,9 +857,8 @@ class ImageProcessor:
         h_raw, w_raw = f32_buffer.shape[:2]
         export_scale = max(h_raw, w_raw) / float(APP_CONFIG.preview_render_size)
 
-        # Only reached by an edit never opened in the app (armed by copy-settings, or
-        # restored from an old sidecar). Anything previewed arrives with its rect already
-        # frozen, which is what keeps this export identical to what was on screen.
+        # Only hits detection for an edit never previewed (armed by copy-settings or an old
+        # sidecar); a previewed edit arrives with its rect frozen, so the export matches it.
         params, _ = _resolve_armed_autocrop(f32_buffer, params)
 
         if self._is_flat(params):

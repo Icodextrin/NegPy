@@ -46,9 +46,8 @@ class GeometryProcessor:
         # Downstream coordinate mappers (retouch/local) need the same correction.
         context.metrics["distortion_k1"] = self.distortion_k1
 
-        # One crop source, whether the rect was drawn or detected: border detection runs
-        # before the engines (ImageProcessor resolves it into crop_rect) and never here,
-        # so a preview and an export of the same edit cannot land on different boxes.
+        # Drawn or detected, the rect is already in crop_rect: ImageProcessor resolves
+        # detection before the engines, never here.
         if self.config.crop_rect:
             roi = get_manual_rect_coords(
                 img,

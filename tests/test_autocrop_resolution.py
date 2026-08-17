@@ -1,9 +1,7 @@
-"""Auto Crop resolves once and is then a stored rect.
+"""Auto Crop resolves once, upstream of both engines, and is then a stored rect.
 
-The bug these cover: Auto Crop used to re-detect inside every render, so a 1600 px
-preview buffer and a full-resolution export ran the border walk on different pixels and
-could land on different frames — the exported file was cropped somewhere the user never
-saw. Detection now happens once, upstream of both engines, and is frozen into the config.
+Re-detecting per render runs the border walk on preview and full-resolution pixels, which
+can land on different frames and export a crop the user never saw.
 """
 
 from dataclasses import replace
@@ -42,9 +40,8 @@ def _normalized_roi(img: np.ndarray, config: WorkspaceConfig, scale_factor: floa
 
 
 def test_export_crops_exactly_where_the_preview_cropped():
-    """The regression: resolve on a preview-sized buffer, then render full-res off the
-    same edit and get the same frame. The two buffers detect differently in isolation —
-    only one of them is ever asked to."""
+    """Resolve on a preview-sized buffer, render full-res off the same edit, get the same
+    frame. The two buffers detect differently in isolation; only one is ever asked to."""
     full = _frame_image(2400, 3600)
     preview = cv2.resize(full, (1600, 1067), interpolation=cv2.INTER_AREA)
 
