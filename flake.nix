@@ -106,8 +106,11 @@
     # negpy/ package tree, so setuptools never picks them up as package data.
     # get_resource_path() (negpy/kernel/system/paths.py) walks 3 levels up from
     # itself and expects to land in the site-packages dir these are copied into.
-    # negpy/features/**/shaders/*.wgsl are inside the package but non-.py, so
-    # setuptools drops those too — merge the source tree back in after install.
+    # negpy/features/**/shaders/*.wgsl and desktop/view/styles/*.qss are inside
+    # the package but non-.py, so setuptools drops those too — merge the source
+    # tree back in after install. Without the stylesheet, main.py's
+    # os.path.exists() guard fails and the app falls back to bare Qt Fusion
+    # styling instead of NegPy's dark theme.
     dataFixupOverlay = python: final: prev: {
       negpy = prev.negpy.overrideAttrs (old: {
         postInstall =
@@ -116,6 +119,7 @@
             site_packages="$out/${python.sitePackages}"
             cp -r icc media crosstalk gear "$site_packages/"
             cp -r negpy/features "$site_packages/negpy/"
+            cp -r negpy/desktop/view/styles "$site_packages/negpy/desktop/view/"
             cp VERSION "$site_packages/"
           '';
       });
@@ -137,6 +141,9 @@
 
     mkNegpy = pkgs: pythonSet: let
       venv = pythonSet.mkVirtualEnv "negpy-env" workspace.deps.default;
+      # modern_dark.qss requests "Inter"; bundle it via fontconfig rather than
+      # relying on it being installed system-wide, same as upstream's AppImage.
+      fontsConf = pkgs.makeFontsConf {fontDirectories = [pkgs.inter];};
     in
       pkgs.stdenv.mkDerivation {
         pname = "negpy";
@@ -165,7 +172,8 @@
               pkgs.vulkan-loader
               pkgs.libGL
             ]
-          }
+          } \
+            --set FONTCONFIG_FILE ${fontsConf}
 
           install -Dm644 ${./negpy.desktop} $out/share/applications/negpy.desktop
           substituteInPlace $out/share/applications/negpy.desktop \
