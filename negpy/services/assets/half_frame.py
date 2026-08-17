@@ -54,6 +54,13 @@ def remember_split_scans(repo: Any, hashes: Any) -> None:
         repo.save_global_setting(SPLIT_SCANS_KEY, sorted(new))
 
 
+def forget_split_scan(repo: Any, file_hash: Optional[str]) -> None:
+    """Drop a base hash from the split-scan set, so the scan is no longer a diptych."""
+    known = split_scans(repo)
+    if file_hash in known:
+        repo.save_global_setting(SPLIT_SCANS_KEY, sorted(known - {file_hash}))
+
+
 def half_hash(file_hash: str, half: int) -> str:
     return f"{file_hash}{_SEP}{half}"
 

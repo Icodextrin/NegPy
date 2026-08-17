@@ -12,6 +12,7 @@ from negpy.services.assets.half_frame import (
     detect_split_x,
     SPLIT_SCANS_KEY,
     diptych_configs,
+    forget_split_scan,
     gap_px,
     half_hash,
     half_name,
@@ -306,6 +307,14 @@ class TestDiptych:
         remember_split_scans(repo, {"h"})
         repo.save_global_setting.assert_not_called()
 
+    def test_forget_split_scan_drops_one_hash_and_skips_an_unknown_write(self):
+        repo = self._repo({"h#1": WorkspaceConfig()}, split=("g", "h"))
+        forget_split_scan(repo, "h")
+        repo.save_global_setting.assert_called_once_with(SPLIT_SCANS_KEY, ["g"])
+        repo.save_global_setting.reset_mock()
+        forget_split_scan(repo, "z")
+        repo.save_global_setting.assert_not_called()
+
     def test_export_filename_is_not_a_half(self):
         name = render_export_filename("/x/IMG420.tif", ExportConfig(), composite="DIPTYCH")
         assert name.endswith("IMG420-DIPTYCH") and "IMG420_1" not in name
@@ -460,6 +469,42 @@ class TestDiptychAsset:
         info, pair = AppController._diptych_task(ctrl, {"hash": "ha", "diptych": False})
         assert pair is None and info["hash"] == "ha"
         ctrl.session.repo.load_file_settings_many.assert_not_called()
+
+    def test_undiptych_forgets_the_split_and_deletes_both_halves(self):
+        from negpy.desktop.controller import AppController
+
+        ctrl = self._controller({"ha#1": WorkspaceConfig(), "ha#2": WorkspaceConfig()})
+        asset = {"path": "/p/a.tif", "hash": "ha", "diptych": True}
+        ctrl.state = MagicMock()
+        ctrl.state.selected_file_idx = 0
+        ctrl.state.uploaded_files = [asset]
+        ctrl.state.current_file_hash = "ha"
+        ctrl._measured_half_rows = {"ha#1"}
+        ctrl.set_status = MagicMock()
+        ctrl.load_file = MagicMock()
+
+        AppController.request_undiptych(ctrl)
+
+        ctrl.session.repo.save_global_setting.assert_called_once_with(SPLIT_SCANS_KEY, [])
+        assert [c.args[0] for c in ctrl.session.repo.delete_file_settings.call_args_list] == ["ha#1", "ha#2"]
+        assert asset["diptych"] is False
+        assert ctrl._measured_half_rows == set()  # or a re-meter files a row again
+        assert ctrl._active_diptych_memo == ("", None)
+        ctrl.load_file.assert_called_once_with("/p/a.tif")
+
+    def test_undiptych_leaves_a_plain_frame_alone(self):
+        from negpy.desktop.controller import AppController
+
+        ctrl = self._controller({})
+        ctrl.state = MagicMock()
+        ctrl.state.selected_file_idx = 0
+        ctrl.state.uploaded_files = [{"path": "/p/a.tif", "hash": "ha"}]
+        ctrl.set_status = MagicMock()
+
+        AppController.request_undiptych(ctrl)
+
+        ctrl.session.repo.delete_file_settings.assert_not_called()
+        ctrl.session.repo.save_global_setting.assert_not_called()
 
     def test_composite_kind_and_summary(self):
         from negpy.desktop.session import composite_kind, composite_summary

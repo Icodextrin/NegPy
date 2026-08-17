@@ -132,6 +132,21 @@ def test_context_menu_single_selection_items(browser, session):
     assert "Apply settings…" in labels
 
 
+def test_context_menu_offers_unsplit_only_for_a_diptych(browser, session):
+    session.state.selected_indices = [0]
+    session.state.selected_file_idx = 0
+    assert "Unsplit diptych" not in _action_labels(browser._build_context_menu())
+
+    session.state.uploaded_files[0]["diptych"] = True
+    assert "Unsplit diptych" in _action_labels(browser._build_context_menu())
+
+
+def test_unsplit_diptych_needs_the_confirm(browser):
+    with patch("negpy.desktop.view.sidebar.files.QMessageBox.exec"):
+        browser.prompt_undiptych()  # no button clicked: rejected
+    browser.controller.request_undiptych.assert_not_called()
+
+
 def test_context_menu_multi_selection_uses_export_selected(browser, session):
     session.state.selected_indices = [0, 1]
     session.state.selected_file_idx = 0

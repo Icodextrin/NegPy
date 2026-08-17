@@ -70,6 +70,7 @@ from negpy.domain.models import (
 from negpy.services.assets.half_frame import (
     base_hash,
     diptych_configs,
+    forget_split_scan,
     half_hash,
     half_of,
     is_composite,
@@ -3466,6 +3467,31 @@ class AppController(QObject):
         self.session.asset_model.refresh()
         self._pending_scanned_file = paths[0]
         self.request_asset_discovery(paths)
+
+    def request_undiptych(self) -> None:
+        """Turn the active diptych back into one plain scan, deleting both halves' edits.
+
+        The scan leaves the split-scan set, so it stays a plain frame until it is split
+        again. Exported ``.negpy`` half sidecars are left alone.
+        """
+        idx = self.state.selected_file_idx
+        if not (0 <= idx < len(self.state.uploaded_files)):
+            return
+        asset = self.state.uploaded_files[idx]
+        file_hash = asset.get("hash") or ""
+        if not asset.get("diptych") or not file_hash:
+            return
+        forget_split_scan(self.session.repo, file_hash)
+        for n in (1, 2):
+            half = half_hash(file_hash, n)
+            self.session.repo.delete_file_settings(half)
+            self._measured_half_rows.discard(half)
+        asset["diptych"] = False
+        self._active_diptych_memo = ("", None)
+        self.session.asset_model.refresh()
+        if file_hash == self.state.current_file_hash and asset.get("path"):
+            self.load_file(asset["path"])
+        self.set_status("Diptych unsplit — the halves' edits are deleted", 4000)
 
     def _select_file_by_path(self, path: str) -> bool:
         """Find a file by path in uploaded_files and select it."""
