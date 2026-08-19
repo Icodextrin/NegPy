@@ -128,6 +128,8 @@ Type a plain word and it matches the filename. Beyond that the box takes `field:
 | `camera:"Nikon F3"` | quote anything with a space |
 | `iso:>=400` | numeric fields also take `>`, `>=`, `<`, `<=` (`iso`, `frame`, `push`) |
 | `date:2024-03` · `date:>=2024` | by file date; a partial date is a prefix |
+| `shot:1998` · `shot:>=1998-07` | by capture date from the Metadata panel, not the file date |
+| `place:tokyo` | by capture city, state or country |
 | `roll:` `developer:` `lens:` `format:` `scanning:` | the rest of the Metadata panel |
 | `name:` `path:` `ext:tif` | file identity |
 | `keeper:` `rejected:` `edited:` | frames carrying that mark, or with a saved edit |
@@ -814,12 +816,18 @@ The primary **Export** action. Its chevron menu picks the scope: current frame (
 Archival metadata for the **original analog capture** (camera, lens, film, process), written into exported files as EXIF and embedded XMP, so DAMs like Lightroom show your film gear rather than the scanner.
 
 *   **Protect original metadata**: copy the source file's EXIF/XMP to exports unchanged, adding nothing. When it is on, the fields below are ignored.
+*   **Sync custom metadata to all files in batch export**: batch and preset exports write this frame's capture, gear and process values to every file, instead of each file's own.
 
 **Analog Gear** (searchable; type in any field to filter the library):
 
 *   **Preset**: a reusable camera, lens and film combination. **Clear** empties the gear selections.
 *   **Camera / Lens / Film stock**: pick from your library. Empty means not set.
 *   **Manage…**: edit cameras, lenses, film stocks and presets. Starter data seeds into `~/NegPy/gear/` on first launch.
+
+**Capture:**
+
+*   **Date**: when the frame was shot — give only what you know: `1998`, `1998-07`, `1998-07-14` or `1998-07-14 16:30`, with an optional offset such as `+02:00`. An impossible date turns the field red and is not saved. EXIF `DateTimeOriginal` pads the missing parts; XMP `photoshop:DateCreated` keeps the truncated form and `negpy:CaptureDatePrecision` names it. The scan file's own timestamp moves to `DateTimeDigitized`.
+*   **Place**: the capture location. The map-pin button opens a map to search a place name, click a position or paste coordinates, the ✕ beside it empties the place, and the field itself accepts a pasted coordinate pair or an OpenStreetMap/Google Maps link. Coordinates are written to the EXIF GPS tags and XMP `exif:GPS*`, the names to XMP `photoshop:City`/`State`/`Country`; a TIFF carries the location in XMP only, and a place you set replaces the source file's GPS block whole, rather than leaving its altitude or heading beside your coordinates. A geotagged source with no place set here keeps its own coordinates on export, and the map opens centred on them — where the frame was digitized is a starting view, never the capture place. Opening the map contacts OpenStreetMap; typing coordinates needs no network.
 
 **Process:**
 
@@ -831,11 +839,10 @@ Archival metadata for the **original analog capture** (camera, lens, film, proce
 
 *   **Scanning**: scan method or notes. EXIF `Software` is always `NegPy`.
 *   **Roll / Frame**: Scanlight capture roll name and frame number, stamped automatically on capture and editable here. Available in export filename templates as `{{ roll }}` and `{{ frame }}`, and written to XMP as `negpy:CaptureRoll` and `negpy:CaptureFrame` when set. Not the Roll Analysis normalization name.
-*   **Sync custom metadata to all files in batch export**: apply this tab's values to every file in a batch.
 
 **Exposure**: optional original shutter, aperture and ISO. Click the lock to edit a free-text string, for example `1/125s f/2.8 ISO 400`.
 
-**Metadata preview**: a live view of exactly what will be embedded, grouped by capture, scan, process and file. **Description…** opens a checklist of which fields join into EXIF `ImageDescription`. The defaults are camera, lens, film stock and ISO; format, developer, push/pull and scanning are off until you enable them. Confirming **Description…** sets that frame's selection and becomes the sticky default for other frames that do not have their own, so the last confirm on the roll wins. Sync metadata and Sync settings can also copy a frame's selection with the rest of the metadata.
+**Metadata preview**: a live view of exactly what will be embedded, grouped by capture, scan, process and file. The Scan group shows the source file's own timestamp and coordinates, so you can see what you are replacing. **Description…** opens a checklist of which fields join into EXIF `ImageDescription`. The defaults are camera, lens, film stock and ISO; format, developer, push/pull and scanning are off until you enable them. Confirming **Description…** sets that frame's selection and becomes the sticky default for other frames that do not have their own, so the last confirm on the roll wins. Sync metadata and Sync settings can also copy a frame's selection with the rest of the metadata.
 
 When you set capture gear, it is written to standard EXIF, and the digitizing rig is preserved separately in `negpy:Scan*` XMP tags. Leave gear unset and your scanner or DSLR stays visible in EXIF instead.
 
