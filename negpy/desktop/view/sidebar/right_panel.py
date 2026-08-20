@@ -2,7 +2,7 @@ from typing import Any, Dict
 
 import numpy as np
 import qtawesome as qta
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QTimer
 from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
@@ -253,7 +253,6 @@ class RightPanel(QWidget):
 
     def _connect_signals(self) -> None:
         self.controller.image_updated.connect(self._update_analysis)
-        self.controller.metrics_available.connect(self._update_histograms)
         self.controller.pixel_readout_rgb.connect(self.curve_widget.set_marker)
         self.controller.densitometer_readout.connect(self._on_densitometer)
         self.controller.zone_pins_changed.connect(self._refresh_zone_placement)
@@ -263,8 +262,13 @@ class RightPanel(QWidget):
         self.zone_placement.apply_clicked.connect(self.controller.apply_zone_placement)
         self.zone_placement.remove_clicked.connect(self.controller.remove_zone_pin)
         self.controller.tone_drag_changed.connect(self.curve_widget.set_active_param)
-        self.controller.config_updated.connect(self.export_sidebar.sync_ui)
-        self.controller.config_updated.connect(self.metadata_sidebar.sync_ui)
+        # These two sync_ui calls scan gear/template files; never per drag tick.
+        self._sync_debounce = QTimer()
+        self._sync_debounce.setSingleShot(True)
+        self._sync_debounce.setInterval(150)
+        self._sync_debounce.timeout.connect(self.export_sidebar.sync_ui)
+        self._sync_debounce.timeout.connect(self.metadata_sidebar.sync_ui)
+        self.controller.config_updated.connect(self._sync_debounce.start)
         self.controls_panel.modified_synced.connect(self._sync_tab_edited)
 
     def _sync_tab_edited(self) -> None:
@@ -394,6 +398,8 @@ class RightPanel(QWidget):
         if metrics.get("interactive"):
             return
 
+        # The only histogram refresh: a peek paint emits image_updated without
+        # metrics_available, so this path must cover it.
         self._update_histograms(metrics)
         # Measured zones read through the current config, so they track every render.
         self._refresh_zone_placement()
