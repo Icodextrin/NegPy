@@ -18,12 +18,32 @@ from negpy.features.metadata.gear_models import GearLibrary
 from negpy.features.metadata.models import MetadataConfig
 from negpy.features.metadata.payload import NEGPY_SOFTWARE, MetadataPayload, build_metadata_payload
 from negpy.features.metadata.xmp import build_xmp_bytes
+from negpy.infrastructure.loaders.jxl_boxes import (
+    JXL_CODESTREAM,
+    JXL_EXIF_BOX,
+    JXL_SIGNATURE,
+    JXL_XMP_BOX,
+    is_jxl,
+    jxl_boxes,
+    read_jxl_xmp,
+)
 from negpy.services.assets.gear import GearProfiles
 
 _log = logging.getLogger(__name__)
 
 _XMP_APP1_HEADER = b"http://ns.adobe.com/xap/1.0/\x00"
 _TIFF_XMP_TAG = 700  # XMLPacket
+
+_JXL_FTYP = b"jxl \x00\x00\x00\x00jxl "
+_JXL_CODESTREAM_BOXES = frozenset({b"jxlc", b"jxlp"})
+_JXL_METADATA_BOXES = frozenset({JXL_EXIF_BOX, JXL_XMP_BOX})
+
+_WEBP_METADATA_CHUNKS = frozenset({b"EXIF", b"XMP "})
+# VP8X feature flags, MSB first: reserved(2), ICC, alpha, EXIF, XMP, animation, reserved.
+_VP8X_ICC = 0x20
+_VP8X_ALPHA = 0x10
+_VP8X_EXIF = 0x08
+_VP8X_XMP = 0x04
 
 
 def _parse_exposure_str(text: str) -> dict:
@@ -76,8 +96,26 @@ def _apex_from_f_number(f_number: float) -> float:
     return 2.0 * math.log(f_number, 2.0)
 
 
+_ASCII_SUBSTITUTIONS = str.maketrans(
+    {
+        "\u2022": "-",  # the bullet joining ImageDescription parts
+        "\u00d7": "x",  # sheet-film sizes: 4x5, 8x10
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u201c": '"',
+        "\u201d": '"',
+        "\u2026": "...",
+        "\u00a0": " ",
+    }
+)
+
+
 def _exif_ascii(text: str) -> bytes:
-    return text.encode("ascii", errors="replace")
+    """EXIF ASCII holds 7-bit only, so transliterate the punctuation NegPy and its
+    users write before the encoder turns it into '?'."""
+    return text.translate(_ASCII_SUBSTITUTIONS).encode("ascii", errors="replace")
 
 
 def _build_custom_exif(payload: MetadataPayload) -> dict:
@@ -126,7 +164,7 @@ def _build_custom_exif(payload: MetadataPayload) -> dict:
 
     if user_comment_parts:
         lines = [f"{k.replace('_', ' ').title()}: {v}" for k, v in user_comment_parts.items()]
-        uc_bytes = b"ASCII\x00\x00\x00" + "\n".join(lines).encode("ascii", "replace")
+        uc_bytes = b"ASCII\x00\x00\x00" + _exif_ascii("\n".join(lines))
         exif[piexif.ExifIFD.UserComment] = uc_bytes
 
     if flags.exposure and payload.capture_exposure:
@@ -231,6 +269,9 @@ def _read_xmp_from_source(source_path: str) -> Optional[bytes]:
             with open(source_path, "rb") as fh:
                 data = fh.read()
             return _extract_jpeg_xmp(data)
+        if is_jxl(head):
+            with open(source_path, "rb") as fh:
+                return read_jxl_xmp(fh.read())
         with tifffile.TiffFile(source_path) as tf:
             tag = tf.pages[0].tags.get(_TIFF_XMP_TAG)
             if tag is None:
@@ -330,12 +371,37 @@ def preserve_source_metadata(
         elif image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
             exif_bytes = piexif.dump(_sanitize_exif(exif_dict))
             _rewrite_png_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
+        elif image_bytes[:4] == b"RIFF":
+            exif_bytes = piexif.dump(_sanitize_exif(exif_dict))
+            _rewrite_webp_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
+        elif is_jxl(image_bytes):
+            exif_bytes = piexif.dump(_sanitize_exif(exif_dict))
+            _rewrite_jxl_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
         else:
             exif_bytes = piexif.dump(_sanitize_exif(exif_dict))
             _rewrite_tiff_preserve(image_bytes, exif_bytes, output, xmp_bytes, fold_user_comment=False)
         return output.getvalue()
     except Exception:
         _log.warning("metadata passthrough failed", exc_info=True)
+        return image_bytes
+
+
+def embed_jxl_boxes(
+    image_bytes: bytes,
+    exif_bytes: Optional[bytes] = None,
+    xmp_bytes: Optional[bytes] = None,
+) -> bytes:
+    """Attach EXIF/XMP to JPEG XL bytes assembled outside the MetadataConfig path,
+    such as a Linear Output dump. Returns the input unchanged if the container
+    cannot be rebuilt."""
+    if not exif_bytes and not xmp_bytes:
+        return image_bytes
+    try:
+        output = io.BytesIO()
+        _rewrite_jxl_with_metadata(image_bytes, exif_bytes or b"", output, xmp_bytes)
+        return output.getvalue()
+    except Exception:
+        _log.warning("JPEG XL metadata embed failed", exc_info=True)
         return image_bytes
 
 
@@ -390,6 +456,12 @@ def embed_metadata(
         elif image_bytes[:8] == b"\x89PNG\r\n\x1a\n":
             exif_bytes = piexif.dump(_sanitize_exif(merged))
             _rewrite_png_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
+        elif image_bytes[:4] == b"RIFF":
+            exif_bytes = piexif.dump(_sanitize_exif(merged))
+            _rewrite_webp_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
+        elif is_jxl(image_bytes):
+            exif_bytes = piexif.dump(_sanitize_exif(merged))
+            _rewrite_jxl_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
         else:
             exif_bytes = piexif.dump(_sanitize_exif(merged))
             _rewrite_tiff_with_metadata(image_bytes, exif_bytes, output, xmp_bytes)
@@ -601,10 +673,10 @@ def _rewrite_tiff_preserve(
     if xmp_bytes:
         extratags.append((_TIFF_XMP_TAG, 7, len(xmp_bytes), xmp_bytes, True))
 
-    metadata = None
-    software = None
-    if not fold_user_comment:
-        metadata, software = _tiff_metadata_from_exif_bytes(exif_bytes)
+    metadata, software = _tiff_metadata_from_exif_bytes(exif_bytes)
+    if fold_user_comment:
+        # Artist and Copyright reach the file through extratags on the embed path.
+        metadata = None
 
     tifffile.imwrite(
         output,
@@ -635,6 +707,137 @@ def _rewrite_png_with_metadata(
         if icc:
             save_kwargs["icc_profile"] = icc
         im.save(output, **save_kwargs)
+
+
+def _jxl_box(btype: bytes, payload: bytes) -> bytes:
+    size = len(payload) + 8
+    if size > 0xFFFFFFFF:
+        return struct.pack(">I", 1) + btype + struct.pack(">Q", size + 8) + payload
+    return struct.pack(">I", size) + btype + payload
+
+
+def _tiff_header_exif(exif_bytes: bytes) -> bytes:
+    """Strip the JPEG APP1 'Exif\x00\x00' prefix. Every other container stores the
+    TIFF header on its own."""
+    return exif_bytes[6:] if exif_bytes[:6] == b"Exif\x00\x00" else exif_bytes
+
+
+def _is_jxl_metadata_box(btype: bytes, data: bytes, start: int) -> bool:
+    """Exif/XMP boxes, including the brotli-compressed 'brob' form that names its
+    inner type in the first four payload bytes."""
+    if btype in _JXL_METADATA_BOXES:
+        return True
+    return btype == b"brob" and data[start : start + 4] in _JXL_METADATA_BOXES
+
+
+def _rewrite_jxl_with_metadata(
+    image_bytes: bytes,
+    exif_bytes: bytes,
+    output: io.BytesIO,
+    xmp_bytes: Optional[bytes] = None,
+) -> None:
+    """Rebuild a JPEG XL container with fresh Exif/XMP boxes ahead of the codestream."""
+    if image_bytes[:2] == JXL_CODESTREAM:
+        container = JXL_SIGNATURE + _jxl_box(b"ftyp", _JXL_FTYP) + _jxl_box(b"jxlc", image_bytes)
+    else:
+        container = image_bytes
+
+    metadata: list[bytes] = []
+    if exif_bytes:
+        # The Exif box payload is a 4-byte offset to the TIFF header, then the header itself.
+        metadata.append(_jxl_box(JXL_EXIF_BOX, b"\x00\x00\x00\x00" + _tiff_header_exif(exif_bytes)))
+    if xmp_bytes:
+        metadata.append(_jxl_box(JXL_XMP_BOX, xmp_bytes))
+
+    parts: list[bytes] = []
+    inserted = False
+    for btype, start, end in jxl_boxes(container):
+        if _is_jxl_metadata_box(btype, container, start):
+            continue
+        if not inserted and btype in _JXL_CODESTREAM_BOXES:
+            parts.extend(metadata)
+            inserted = True
+        parts.append(_jxl_box(btype, container[start:end]))
+    if not inserted:
+        raise ValueError("no JPEG XL codestream box")
+
+    output.write(b"".join(parts))
+
+
+def _webp_chunks(image_bytes: bytes) -> list[tuple[bytes, int, int]]:
+    """Split a WebP file into (fourcc, payload start, payload end) chunks. Odd-sized
+    payloads carry a pad byte that belongs to the chunk but not to its size."""
+    if image_bytes[:4] != b"RIFF" or image_bytes[8:12] != b"WEBP":
+        raise ValueError("not a WebP file")
+    riff_end = min(len(image_bytes), 8 + int.from_bytes(image_bytes[4:8], "little"))
+    chunks: list[tuple[bytes, int, int]] = []
+    pos = 12
+    while pos + 8 <= riff_end:
+        size = int.from_bytes(image_bytes[pos + 4 : pos + 8], "little")
+        start = pos + 8
+        end = start + size
+        if end > riff_end:
+            raise ValueError("malformed WebP chunk size")
+        chunks.append((image_bytes[pos : pos + 4], start, end))
+        pos = end + (size & 1)
+    if not chunks:
+        raise ValueError("no WebP chunks")
+    return chunks
+
+
+def _webp_chunk(fourcc: bytes, payload: bytes) -> bytes:
+    return fourcc + struct.pack("<I", len(payload)) + payload + (b"\x00" if len(payload) & 1 else b"")
+
+
+def _webp_vp8x_header(image_bytes: bytes, chunks: list[tuple[bytes, int, int]]) -> bytearray:
+    """The VP8X header a simple WebP has to gain before it can hold metadata:
+    flags, then canvas width and height less one, little-endian in 3 bytes each."""
+    for fourcc, start, end in chunks:
+        if fourcc == b"VP8X":
+            return bytearray(image_bytes[start:end])
+
+    with Image.open(io.BytesIO(image_bytes)) as im:
+        width, height = im.size
+        has_alpha = im.mode in ("RGBA", "LA") or "transparency" in im.info
+    header = bytearray(10)
+    header[0] = _VP8X_ALPHA if has_alpha else 0
+    header[4:7] = (width - 1).to_bytes(3, "little")
+    header[7:10] = (height - 1).to_bytes(3, "little")
+    return header
+
+
+def _rewrite_webp_with_metadata(
+    image_bytes: bytes,
+    exif_bytes: bytes,
+    output: io.BytesIO,
+    xmp_bytes: Optional[bytes] = None,
+) -> None:
+    """Rebuild the RIFF container with fresh EXIF/XMP chunks. Only the extended
+    (VP8X) form can hold them, and the spec fixes the chunk order."""
+    chunks = _webp_chunks(image_bytes)
+    header = _webp_vp8x_header(image_bytes, chunks)
+    kept = [c for c in chunks if c[0] not in _WEBP_METADATA_CHUNKS and c[0] != b"VP8X"]
+
+    exif_payload = _tiff_header_exif(exif_bytes) if exif_bytes else b""
+    flags = header[0] & ~(_VP8X_EXIF | _VP8X_XMP)
+    if any(fourcc == b"ICCP" for fourcc, _s, _e in kept):
+        flags |= _VP8X_ICC
+    if exif_payload:
+        flags |= _VP8X_EXIF
+    if xmp_bytes:
+        flags |= _VP8X_XMP
+    header[0] = flags
+
+    ordered = [c for c in kept if c[0] == b"ICCP"] + [c for c in kept if c[0] != b"ICCP"]
+    parts = [_webp_chunk(b"VP8X", bytes(header))]
+    parts += [_webp_chunk(fourcc, image_bytes[start:end]) for fourcc, start, end in ordered]
+    if exif_payload:
+        parts.append(_webp_chunk(b"EXIF", exif_payload))
+    if xmp_bytes:
+        parts.append(_webp_chunk(b"XMP ", xmp_bytes))
+
+    body = b"".join(parts)
+    output.write(b"RIFF" + struct.pack("<I", len(body) + 4) + b"WEBP" + body)
 
 
 def _rewrite_tiff_with_metadata(
