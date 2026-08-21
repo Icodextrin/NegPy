@@ -854,11 +854,13 @@ Gear travels as one unit — camera, lens, film stock, the film format and every
 *   **Developer** and **Dilution**: the developer, for example `D-76`, and its working strength, for example `1+1`, `1+50` or `stock`. The two join in EXIF `ImageDescription` as `D-76 1+1`; the dilution also goes to XMP as `negpy:DevelopmentDilution`.
 *   **Push / Pull**: `Push +3` … `Normal` … `Pull -3`.
 *   **Time** and **Temp (°C)**: development time as `9:30` or plain minutes, and the temperature it ran at. An unreadable time turns the field red and is not saved. Both are written to XMP as `negpy:DevelopmentTime` and `negpy:DevelopmentTemperature`, and searchable as `devtime:` (minutes) and `temp:`.
+*   **Clear**: empties the saved process and everything it fills — developer, dilution, push/pull, time and temperature. Format stays, since the film stock sets it.
 
 **Scanning:**
 
 *   **Saved setup**: pick a digitizing setup from the library to fill Scanning. Typing over it unlinks it.
 *   **Scanning**: scan method or notes. EXIF `Software` is always `NegPy`.
+*   **Clear**: empties the saved setup and the scanning note. Roll and Frame stay, since the scan stamps them rather than the setup.
 *   **Roll / Frame**: Scanlight capture roll name and frame number, stamped automatically on capture and editable here. Available in export filename templates as `{{ roll }}` and `{{ frame }}`, and written to XMP as `negpy:CaptureRoll` and `negpy:CaptureFrame` when set. Not the Roll Analysis normalization name.
 
 **Exposure**: optional original shutter, aperture and ISO. Click the lock to edit a free-text string, for example `1/125s f/2.8 ISO 400`.

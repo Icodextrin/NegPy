@@ -198,3 +198,54 @@ class TestPlaceButtons:
             assert button.text() == ""
             assert button.icon().isNull() is False
             assert button.toolTip() != ""
+
+
+class TestClearButtons:
+    """Each Clear empties what its own picker fills, and leaves the rest of the card alone."""
+
+    def test_process_clear_empties_the_recipe_and_its_link(self, sidebar: MetadataSidebar) -> None:
+        _set_metadata(
+            sidebar,
+            process_id="p1",
+            developer="HC-110",
+            process_dilution="1+31",
+            push_pull=1,
+            process_time_seconds=570,
+            process_temperature_c=20.0,
+            format="120",
+            film="Ilford HP5+",
+        )
+        sidebar.sync_ui()
+
+        sidebar.process_clear_btn.click()
+
+        meta = sidebar.state.config.metadata
+        assert meta.process_id == ""
+        assert meta.developer == ""
+        assert meta.process_dilution == ""
+        assert meta.push_pull == 0
+        assert meta.process_time_seconds is None
+        assert meta.process_temperature_c is None
+        # Format comes from the film stock, not the process picker.
+        assert meta.format == "120"
+        assert meta.film == "Ilford HP5+"
+
+    def test_scanning_clear_keeps_roll_and_frame(self, sidebar: MetadataSidebar) -> None:
+        _set_metadata(sidebar, scanning_id="s1", scanning="DSLR copy-stand", capture_roll="Roll042", capture_frame=12)
+        sidebar.sync_ui()
+
+        sidebar.scan_clear_btn.click()
+
+        meta = sidebar.state.config.metadata
+        assert meta.scanning_id == ""
+        assert meta.scanning == ""
+        # Stamped by the scan itself, not filled by the setup picker.
+        assert meta.capture_roll == "Roll042"
+        assert meta.capture_frame == 12
+
+    def test_clears_are_bound_actions(self, sidebar: MetadataSidebar) -> None:
+        from negpy.desktop.view.shortcut_registry import REGISTRY
+
+        for action_id in ("metadata_clear_gear", "metadata_clear_process", "metadata_clear_scanning"):
+            assert action_id in REGISTRY
+            assert REGISTRY[action_id].default_key == ""

@@ -44,7 +44,14 @@ from negpy.features.metadata.capture import (
 from negpy.features.metadata.exif_read import extract_scan_from_exif
 from negpy.features.metadata.gear_logic import metadata_from_gear, metadata_from_process, metadata_from_scan_setup
 from negpy.features.metadata.gear_models import GearLibrary
-from negpy.features.metadata.models import DEFAULT_DESCRIPTION_FIELDS, PUSH_PULL_LABELS, PUSH_PULL_VALUES
+from negpy.features.metadata.models import (
+    DEFAULT_DESCRIPTION_FIELDS,
+    PROCESS_FIELDS,
+    PUSH_PULL_LABELS,
+    PUSH_PULL_VALUES,
+    SCANNING_FIELDS,
+    MetadataConfig,
+)
 from negpy.features.metadata.payload import build_metadata_payload
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.presets import MetadataPresets
@@ -52,6 +59,14 @@ from negpy.services.assets.presets import MetadataPresets
 FORMAT_OPTIONS = ["35mm", "120", "4×5", "8×10", "110", "Other"]
 PUSH_PULL_OPTIONS = [PUSH_PULL_LABELS[v] for v in PUSH_PULL_VALUES]
 _LOAD_TOOLTIP = "Write the selected preset's fields onto this frame"
+_CLEAR_TOOLTIPS = {
+    "gear_clear_btn": ("Clear the camera, lens and film stock selections", "metadata_clear_gear"),
+    "process_clear_btn": (
+        "Clear the saved process and the developer, dilution, push, time and temperature it fills",
+        "metadata_clear_process",
+    ),
+    "scan_clear_btn": ("Clear the saved scan setup and its scanning note", "metadata_clear_scanning"),
+}
 
 
 class MetadataSidebar(BaseSidebar):
@@ -105,7 +120,6 @@ class MetadataSidebar(BaseSidebar):
         self.metadata_preset_combo.setToolTip("A saved set of metadata values. Click and type to search.")
         load_row.addWidget(self.metadata_preset_combo, 1)
         self.metadata_preset_load_btn = QPushButton("Load")
-        self.apply_shortcut_tooltips()
         load_row.addWidget(self.metadata_preset_load_btn)
         presets.addLayout(load_row)
 
@@ -136,7 +150,7 @@ class MetadataSidebar(BaseSidebar):
         gear.addWidget(self.film_stock_combo)
 
         self.gear_clear_btn = QPushButton("Clear")
-        self.gear_clear_btn.setToolTip("Clear the camera, lens and film stock selections")
+
         gear.addWidget(self.gear_clear_btn)
         controls.addWidget(self._card("Analog Gear", "gear", gear_body, "fa5s.camera-retro"))
 
@@ -234,6 +248,9 @@ class MetadataSidebar(BaseSidebar):
         dev_row.addLayout(time_col, 1)
         dev_row.addLayout(temp_col, 1)
         proc.addLayout(dev_row)
+
+        self.process_clear_btn = QPushButton("Clear")
+        proc.addWidget(self.process_clear_btn)
         controls.addWidget(self._card("Process", "process", proc_body, "fa5s.flask"))
 
         # ── SCANNING ─────────────────────────────────────────────────────
@@ -272,6 +289,8 @@ class MetadataSidebar(BaseSidebar):
         roll_row.addLayout(frame_col, 1)
         scan.addLayout(roll_row)
 
+        self.scan_clear_btn = QPushButton("Clear")
+        scan.addWidget(self.scan_clear_btn)
         controls.addWidget(self._card("Scanning", "scanning", scan_body, "mdi6.scanner"))
 
         # ── EXPOSURE ─────────────────────────────────────────────────────
@@ -314,6 +333,8 @@ class MetadataSidebar(BaseSidebar):
         self.preview_section.set_content(self.preview_content)
         self.layout.addWidget(self.preview_section)
 
+        # After every card: the tooltips it fills in span all of them.
+        self.apply_shortcut_tooltips()
         self._set_metadata_controls_enabled(not conf.protect_original_metadata)
 
     def _card_body(self) -> tuple[QWidget, QVBoxLayout]:
@@ -386,6 +407,8 @@ class MetadataSidebar(BaseSidebar):
         self.protect_check.toggled.connect(self._on_protect_toggled)
         self.description_fields_btn.clicked.connect(self._open_description_fields)
         self.gear_clear_btn.clicked.connect(self._on_gear_clear)
+        self.process_clear_btn.clicked.connect(self._on_process_clear)
+        self.scan_clear_btn.clicked.connect(self._on_scanning_clear)
         self.camera_combo.selection_changed.connect(self._on_gear_changed)
         self.lens_combo.selection_changed.connect(self._on_gear_changed)
         self.film_stock_combo.selection_changed.connect(self._on_gear_changed)
@@ -559,6 +582,17 @@ class MetadataSidebar(BaseSidebar):
         )
         self._apply_metadata_config(cleared)
 
+    def _clear_fields(self, fields: tuple[str, ...]) -> None:
+        defaults = MetadataConfig()
+        self._dirty = False
+        self._apply_metadata_config(replace(self.state.config.metadata, **{f: getattr(defaults, f) for f in fields}))
+
+    def _on_process_clear(self) -> None:
+        self._clear_fields(PROCESS_FIELDS)
+
+    def _on_scanning_clear(self) -> None:
+        self._clear_fields(SCANNING_FIELDS)
+
     def _on_gear_changed(self, *_args) -> None:
         sender = self.sender()
         kwargs: dict = {}
@@ -595,6 +629,8 @@ class MetadataSidebar(BaseSidebar):
         """Re-read the binding: tooltips are built before saved overrides load, and again
         whenever the shortcut editor writes a new one."""
         self.metadata_preset_load_btn.setToolTip(tooltip_with_shortcut(_LOAD_TOOLTIP, "metadata_preset_load"))
+        for attr, (text, action_id) in _CLEAR_TOOLTIPS.items():
+            getattr(self, attr).setToolTip(tooltip_with_shortcut(text, action_id))
 
     def _refresh_metadata_presets(self) -> None:
         selected = self.metadata_preset_combo.selected_id()
