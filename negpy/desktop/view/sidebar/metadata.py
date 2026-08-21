@@ -20,6 +20,7 @@ from negpy.desktop.settings_catalog import (
     preset_values,
     rows_for_keys,
 )
+from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
 from negpy.desktop.view.sidebar.base import BaseSidebar
 from negpy.desktop.view.styles.templates import field_label, hint_label, wrap_tooltip
 from negpy.desktop.view.styles.fonts import mono_font_family
@@ -103,7 +104,9 @@ class MetadataSidebar(BaseSidebar):
         self.metadata_preset_combo.setToolTip("A saved set of metadata values. Click and type to search.")
         load_row.addWidget(self.metadata_preset_combo, 1)
         self.metadata_preset_load_btn = QPushButton("Load")
-        self.metadata_preset_load_btn.setToolTip("Write the selected preset's fields onto this frame")
+        self.metadata_preset_load_btn.setToolTip(
+            tooltip_with_shortcut("Write the selected preset's fields onto this frame", "metadata_preset_load")
+        )
         load_row.addWidget(self.metadata_preset_load_btn)
         presets.addLayout(load_row)
 
@@ -405,7 +408,7 @@ class MetadataSidebar(BaseSidebar):
         self.dilution_edit.textChanged.connect(self._on_process_edited)
         self.push_pull_combo.currentIndexChanged.connect(self._on_process_edited)
         self.dev_time_edit.textChanged.connect(self._on_dev_time_changed)
-        self.dev_temp_edit.textChanged.connect(self._on_process_edited)
+        self.dev_temp_edit.textChanged.connect(self._on_dev_temp_changed)
         self.scanning_edit.textChanged.connect(self._on_scanning_edited)
         self.capture_roll_edit.textChanged.connect(self._mark_dirty)
         self.capture_frame_edit.textChanged.connect(self._mark_dirty)
@@ -499,9 +502,30 @@ class MetadataSidebar(BaseSidebar):
         )
 
     def _on_dev_time_changed(self, text: str) -> None:
-        valid = not text.strip() or parse_dev_time(text) is not None
-        self.dev_time_edit.setStyleSheet("" if valid else f"border: 1px solid {THEME.accent_secondary};")
+        self._flag_invalid(self.dev_time_edit, bool(text.strip()) and parse_dev_time(text) is None)
         self._on_process_edited()
+
+    def _on_dev_temp_changed(self, text: str) -> None:
+        self._flag_invalid(self.dev_temp_edit, bool(text.strip()) and parse_temperature(text) is None)
+        self._on_process_edited()
+
+    def _flag_invalid(self, edit: QLineEdit, invalid: bool) -> None:
+        edit.setStyleSheet(f"border: 1px solid {THEME.accent_secondary};" if invalid else "")
+
+    def _dev_time_value(self) -> Optional[int]:
+        """Unreadable text keeps what is stored; blank clears. Same rule as Capture Date."""
+        text = self.dev_time_edit.text().strip()
+        if not text:
+            return None
+        parsed = parse_dev_time(text)
+        return self.state.config.metadata.process_time_seconds if parsed is None else parsed
+
+    def _dev_temp_value(self) -> Optional[float]:
+        text = self.dev_temp_edit.text().strip()
+        if not text:
+            return None
+        parsed = parse_temperature(text)
+        return self.state.config.metadata.process_temperature_c if parsed is None else parsed
 
     def _on_process_edited(self, *_args) -> None:
         """Typing over a saved value unlinks it, so the picker never names a value that is gone."""
@@ -592,6 +616,10 @@ class MetadataSidebar(BaseSidebar):
         self._apply_metadata_config(merged.metadata)
 
     def _open_gear_library(self) -> None:
+        # The dialog holds the config it was given, so the debounce has to land first or a
+        # preset saved from "the current frame" misses the edit that is still pending.
+        self.update_timer.stop()
+        self._persist_all_metadata_settings()
         dlg = GearLibraryDialog(self._gear_library, parent=self, current_config=self.state.config)
         dlg.library_changed.connect(self._on_library_changed)
         dlg.presets_changed.connect(self._refresh_metadata_presets)
@@ -715,11 +743,6 @@ class MetadataSidebar(BaseSidebar):
             except ValueError:
                 capture_frame = self.state.config.metadata.capture_frame
 
-        time_text = self.dev_time_edit.text().strip()
-        dev_time = parse_dev_time(time_text)
-        if time_text and dev_time is None:
-            dev_time = self.state.config.metadata.process_time_seconds
-
         date_text = self.capture_date_edit.text().strip()
         parsed_date = parse_capture_date(date_text)
         capture_date = parsed_date.xmp_text() if parsed_date else ("" if not date_text else self.state.config.metadata.capture_date)
@@ -739,8 +762,8 @@ class MetadataSidebar(BaseSidebar):
             developer=self.developer_edit.text().strip(),
             process_dilution=self.dilution_edit.text().strip(),
             push_pull=PUSH_PULL_VALUES[pp_idx] if 0 <= pp_idx < len(PUSH_PULL_VALUES) else 0,
-            process_time_seconds=dev_time,
-            process_temperature_c=parse_temperature(self.dev_temp_edit.text()),
+            process_time_seconds=self._dev_time_value(),
+            process_temperature_c=self._dev_temp_value(),
             scanning_id=self.scan_setup_combo.selected_id(),
             scanning=self.scanning_edit.text().strip(),
             capture_roll=self.capture_roll_edit.text().strip(),
@@ -775,8 +798,9 @@ class MetadataSidebar(BaseSidebar):
             idx = PUSH_PULL_VALUES.index(conf.push_pull) if conf.push_pull in PUSH_PULL_VALUES else 3
             self.push_pull_combo.setCurrentIndex(idx)
             self.dev_time_edit.setText(format_dev_time(conf.process_time_seconds))
-            self.dev_time_edit.setStyleSheet("")
             self.dev_temp_edit.setText(format_temperature(conf.process_temperature_c))
+            self._flag_invalid(self.dev_time_edit, False)
+            self._flag_invalid(self.dev_temp_edit, False)
             self.scanning_edit.setText(conf.scanning)
             self.capture_roll_edit.setText(conf.capture_roll)
             self.capture_frame_edit.setText("" if conf.capture_frame is None else str(conf.capture_frame))
@@ -849,8 +873,8 @@ class MetadataSidebar(BaseSidebar):
             developer=self.developer_edit.text().strip(),
             process_dilution=self.dilution_edit.text().strip(),
             push_pull=PUSH_PULL_VALUES[pp_idx] if 0 <= pp_idx < len(PUSH_PULL_VALUES) else 0,
-            process_time_seconds=parse_dev_time(self.dev_time_edit.text()),
-            process_temperature_c=parse_temperature(self.dev_temp_edit.text()),
+            process_time_seconds=self._dev_time_value(),
+            process_temperature_c=self._dev_temp_value(),
             scanning_id=self.scan_setup_combo.selected_id(),
             scanning=self.scanning_edit.text().strip(),
             sync_to_batch=self.sync_check.isChecked(),

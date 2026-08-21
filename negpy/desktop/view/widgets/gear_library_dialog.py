@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from negpy.desktop.settings_catalog import NON_METADATA_SECTIONS, preset_config, preset_values, selected_flat_dict
+from negpy.desktop.settings_catalog import NON_METADATA_SECTIONS, preset_config, preset_values, rows_for_keys, selected_flat_dict
 from negpy.desktop.view.styles.templates import dialog_pane_qss, field_label, hint_label, pane_header_qss
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.granular_settings_dialog import GranularSettingsDialog
@@ -609,6 +609,9 @@ class GearLibraryDialog(QDialog):
         dlg = GranularSettingsDialog(self, cfg, name, ask_name=True, exclude_sections=NON_METADATA_SECTIONS)
         dlg.setWindowTitle("Edit Metadata Preset")
         dlg.set_name(name)
+        # What the preset stores, not what differs from default: a row deliberately holding
+        # a default value would otherwise arrive unticked and be dropped on save.
+        dlg.set_checked_rows(r.id for r in rows_for_keys(data, "metadata"))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         new_name = dlg.name()

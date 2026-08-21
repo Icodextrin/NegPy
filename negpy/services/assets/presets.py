@@ -41,11 +41,15 @@ class Presets:
 
     @classmethod
     def save_preset(cls, name: str, settings: Dict[str, Any]) -> None:
+        # Written through a temp file: notes save on every keystroke, and a crash
+        # mid-write would otherwise leave a truncated preset behind.
         directory = cls._dir()
         os.makedirs(directory, exist_ok=True)
         filepath = os.path.join(directory, f"{name}.json")
-        with open(filepath, "w") as f_out:
+        tmp = filepath + ".tmp"
+        with open(tmp, "w") as f_out:
             json.dump(settings, f_out, indent=4)
+        os.replace(tmp, filepath)
 
     @classmethod
     def load_preset(cls, name: str) -> Optional[Dict[str, Any]]:

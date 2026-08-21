@@ -67,10 +67,11 @@ def migrate_gear_presets(repo) -> None:
         presets = bundled + [p for p in user if str(p.get("id")) not in seen_ids]
 
         library = GearProfiles.load_library()
-        existing = set(MetadataPresets.list_presets())
+        # Case-folded: on macOS and Windows a differently-cased name is the same file.
+        existing = {n.casefold() for n in MetadataPresets.list_presets()}
         for preset in presets:
             name = _safe_name(str(preset.get("displayName") or preset.get("display_name") or ""))
-            if not name or name in existing:
+            if not name or name.casefold() in existing:
                 continue
             resolved = metadata_from_gear(
                 MetadataConfig(),
@@ -81,7 +82,7 @@ def migrate_gear_presets(repo) -> None:
             )
             fields = {f: getattr(resolved, f) for f in GEAR_FIELDS}
             MetadataPresets.save_preset(name, with_preset_notes(fields, str(preset.get("notes") or "")))
-            existing.add(name)
+            existing.add(name.casefold())
     except Exception as e:  # startup must survive a broken gear file
         logger.warning("Gear preset migration skipped: %s", e)
         return

@@ -19,6 +19,7 @@ from negpy.desktop.settings_catalog import CATALOG, apply_selected_fields, prese
 from negpy.desktop.view.sidebar import metadata as metadata_module
 from negpy.desktop.view.sidebar.metadata import MetadataSidebar
 from negpy.desktop.view.widgets.gear_library_dialog import GearLibraryDialog
+from negpy.desktop.view.widgets.granular_settings_dialog import GranularSettingsDialog
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.metadata.gear_models import Camera, DevelopmentProcess, FilmStock, GearLibrary, ScanSetup
 from negpy.desktop.view.shortcut_registry import REGISTRY
@@ -612,3 +613,107 @@ class TestPresetNotes:
             dialog._edit_preset()
 
         assert preset_notes(MetadataPresets.load_preset("HP5")) == "keep me"
+
+
+class TestSecondReviewRound:
+    def test_editing_keeps_a_row_that_stores_a_default_value(self, qapp_dialog_library):
+        dialog, _library = qapp_dialog_library
+        # push_pull 0 is the default, and storing it deliberately means "develop normally".
+        MetadataPresets.save_preset("Normal dev", {"developer": "D-76", "push_pull": 0, "process_id": ""})
+        dialog._select_category("metadata_presets")
+
+        captured = {}
+
+        def _capture(parent, cfg, name, **kwargs):
+            dlg = GranularSettingsDialog(parent, cfg, name, **kwargs)
+            captured["dlg"] = dlg
+            dlg.exec = lambda: QDialog.DialogCode.Accepted
+            return dlg
+
+        with patch("negpy.desktop.view.widgets.gear_library_dialog.GranularSettingsDialog", _capture):
+            dialog._edit_preset()
+
+        assert "Process" in [r.label for r in captured["dlg"].selected()]
+        assert MetadataPresets.load_preset("Normal dev")["push_pull"] == 0
+        assert MetadataPresets.load_preset("Normal dev")["developer"] == "D-76"
+
+    def test_panel_keeps_the_stored_temperature_while_input_is_invalid(self, sidebar: MetadataSidebar) -> None:
+        sidebar.state.config = replace(
+            sidebar.state.config,
+            metadata=replace(sidebar.state.config.metadata, process_temperature_c=20.0),
+        )
+        sidebar.dev_temp_edit.setText("twenty")
+        assert sidebar.dev_temp_edit.styleSheet() != ""
+        sidebar._persist_all_metadata_settings()
+
+        assert sidebar.state.config.metadata.process_temperature_c == 20.0
+
+    def test_panel_clears_the_temperature_when_blanked(self, sidebar: MetadataSidebar) -> None:
+        sidebar.state.config = replace(
+            sidebar.state.config,
+            metadata=replace(sidebar.state.config.metadata, process_temperature_c=20.0),
+        )
+        sidebar.sync_ui()
+        assert sidebar.dev_temp_edit.text() == "20"
+
+        sidebar.dev_temp_edit.setText("")
+        sidebar._persist_all_metadata_settings()
+
+        assert sidebar.state.config.metadata.process_temperature_c is None
+
+    def test_manage_sees_edits_the_debounce_has_not_written_yet(self, sidebar: MetadataSidebar) -> None:
+        sidebar.developer_edit.setText("Rodinal 1+50")
+        assert sidebar.state.config.metadata.developer != "Rodinal 1+50"  # still pending
+
+        opened = {}
+
+        class _Dialog:
+            def __init__(self, _library, parent=None, current_config=None):
+                opened["config"] = current_config
+                self.library_changed = MagicMock()
+                self.presets_changed = MagicMock()
+
+            def exec(self):
+                return 0
+
+        with patch("negpy.desktop.view.sidebar.metadata.GearLibraryDialog", _Dialog):
+            sidebar._open_gear_library()
+
+        assert opened["config"].metadata.developer == "Rodinal 1+50"
+        assert sidebar.update_timer.isActive() is False
+
+    def test_migration_will_not_overwrite_a_name_differing_only_in_case(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        os.makedirs(APP_CONFIG.gear_dir, exist_ok=True)
+        with open(os.path.join(APP_CONFIG.gear_dir, "gear_presets.json"), "w", encoding="utf-8") as f:
+            json.dump([{"id": "p1", "displayName": "portra", "cameraId": "c1"}], f)
+        monkeypatch.setattr(gear_preset_migration.GearProfiles, "load_library", staticmethod(GearLibrary))
+        monkeypatch.setattr(gear_preset_migration, "get_resource_path", lambda _p: str(tmp_path / "bundled"))
+        MetadataPresets.save_preset("Portra", {"scanning": "mine"})
+
+        migrate_gear_presets(_FakeRepo())
+
+        assert MetadataPresets.load_preset("Portra") == {"scanning": "mine"}
+        assert sorted(n.casefold() for n in MetadataPresets.list_presets()) == ["portra"]
+
+    def test_preset_writes_land_atomically(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(APP_CONFIG, "presets_dir", str(tmp_path))
+        real_replace = os.replace
+        seen = {}
+
+        def _spy(src, dst):
+            seen["tmp"] = src
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", _spy)
+        MetadataPresets.save_preset("HP5", {"developer": "D-76"})
+
+        assert seen["tmp"].endswith(".tmp")
+        assert MetadataPresets.load_preset("HP5") == {"developer": "D-76"}
+        assert [f for f in os.listdir(tmp_path / "metadata") if f.endswith(".tmp")] == []
+
+    def test_load_tooltip_carries_its_binding(self, sidebar: MetadataSidebar) -> None:
+        from negpy.desktop.view.shortcut_registry import tooltip_with_shortcut
+
+        expected = tooltip_with_shortcut("Write the selected preset's fields onto this frame", "metadata_preset_load")
+        assert sidebar.metadata_preset_load_btn.toolTip() == expected
