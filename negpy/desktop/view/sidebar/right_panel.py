@@ -247,9 +247,11 @@ class RightPanel(QWidget):
         return page
 
     def apply_shortcut_tooltips(self) -> None:
-        """Append the current keyboard shortcut (action id `tab_<key>`) to each tab tooltip."""
+        """Append the current keyboard shortcut (action id `tab_<key>`) to each tab tooltip,
+        and pass the call on to the panels that own bound controls of their own."""
         for btn, key, base in zip(self._tab_buttons, self._tab_keys, self._tab_tooltips):
             btn.setToolTip(tooltip_with_shortcut(base, f"tab_{key}"))
+        self.metadata_sidebar.apply_shortcut_tooltips()
 
     def _connect_signals(self) -> None:
         self.controller.image_updated.connect(self._update_analysis)

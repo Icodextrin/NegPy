@@ -39,7 +39,7 @@ from negpy.features.metadata.gear_models import (
 )
 from negpy.features.metadata.models import PUSH_PULL_LABELS, PUSH_PULL_VALUES
 from negpy.services.assets.gear import GearProfiles
-from negpy.services.assets.presets import MetadataPresets, preset_notes, with_preset_notes
+from negpy.services.assets.presets import MetadataPresets, is_valid_preset_name, preset_notes, with_preset_notes
 
 _CATEGORIES = [
     ("cameras", "Cameras"),
@@ -588,6 +588,22 @@ class GearLibraryDialog(QDialog):
             return ""
         return str(items[self._selected_idx])
 
+    def _name_is_usable(self, name: str, replacing: str = "") -> bool:
+        """A preset name is a filename, and a rename onto another preset would replace it."""
+        if not is_valid_preset_name(name):
+            QMessageBox.warning(
+                self,
+                "Preset name",
+                'A preset name cannot contain / \\ : * ? " < > | or start or end with a dot.',
+            )
+            return False
+        if name.casefold() == replacing.casefold() or not MetadataPresets.exists(name):
+            return True
+        return (
+            QMessageBox.question(self, "Replace preset", f"A preset named '{name}' already exists. Replace it?")
+            == QMessageBox.StandardButton.Yes
+        )
+
     def _new_preset_from_frame(self) -> None:
         """A preset is the current frame's metadata, minus the fields left unticked."""
         if self._current_config is None:
@@ -596,8 +612,11 @@ class GearLibraryDialog(QDialog):
         dlg.setWindowTitle("New Metadata Preset")
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        MetadataPresets.save_preset(dlg.name(), selected_flat_dict(self._current_config, dlg.selected()))
-        self._rebuild_item_list(select_id=dlg.name())
+        name = dlg.name().strip()
+        if not self._name_is_usable(name):
+            return
+        MetadataPresets.save_preset(name, selected_flat_dict(self._current_config, dlg.selected()))
+        self._rebuild_item_list(select_id=name)
         self.presets_changed.emit()
 
     def _edit_preset(self) -> None:
@@ -614,10 +633,13 @@ class GearLibraryDialog(QDialog):
         dlg.set_checked_rows(r.id for r in rows_for_keys(data, "metadata"))
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        new_name = dlg.name()
-        MetadataPresets.save_preset(new_name, with_preset_notes(selected_flat_dict(cfg, dlg.selected()), preset_notes(data)))
+        new_name = dlg.name().strip()
+        if not self._name_is_usable(new_name, replacing=name):
+            return
+        # Fields first, under the name that exists; the rename is then one atomic move.
+        MetadataPresets.save_preset(name, with_preset_notes(selected_flat_dict(cfg, dlg.selected()), preset_notes(data)))
         if new_name != name:
-            MetadataPresets.delete_preset(name)
+            MetadataPresets.rename_preset(name, new_name)
         self._rebuild_item_list(select_id=new_name)
         self.presets_changed.emit()
 

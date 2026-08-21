@@ -51,6 +51,7 @@ from negpy.services.assets.presets import MetadataPresets
 
 FORMAT_OPTIONS = ["35mm", "120", "4×5", "8×10", "110", "Other"]
 PUSH_PULL_OPTIONS = [PUSH_PULL_LABELS[v] for v in PUSH_PULL_VALUES]
+_LOAD_TOOLTIP = "Write the selected preset's fields onto this frame"
 
 
 class MetadataSidebar(BaseSidebar):
@@ -104,9 +105,7 @@ class MetadataSidebar(BaseSidebar):
         self.metadata_preset_combo.setToolTip("A saved set of metadata values. Click and type to search.")
         load_row.addWidget(self.metadata_preset_combo, 1)
         self.metadata_preset_load_btn = QPushButton("Load")
-        self.metadata_preset_load_btn.setToolTip(
-            tooltip_with_shortcut("Write the selected preset's fields onto this frame", "metadata_preset_load")
-        )
+        self.apply_shortcut_tooltips()
         load_row.addWidget(self.metadata_preset_load_btn)
         presets.addLayout(load_row)
 
@@ -591,6 +590,11 @@ class MetadataSidebar(BaseSidebar):
             self._refresh_gear_combos(force=True)
         self.sync_ui()
         self._schedule_preview()
+
+    def apply_shortcut_tooltips(self) -> None:
+        """Re-read the binding: tooltips are built before saved overrides load, and again
+        whenever the shortcut editor writes a new one."""
+        self.metadata_preset_load_btn.setToolTip(tooltip_with_shortcut(_LOAD_TOOLTIP, "metadata_preset_load"))
 
     def _refresh_metadata_presets(self) -> None:
         selected = self.metadata_preset_combo.selected_id()

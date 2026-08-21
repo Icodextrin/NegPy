@@ -12,7 +12,7 @@ from dataclasses import fields, replace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from PyQt6.QtWidgets import QDialog
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 from conftest import FakeController
 from negpy.desktop.settings_catalog import CATALOG, apply_selected_fields, preset_config, rows_for_keys, selected_flat_dict
@@ -32,7 +32,7 @@ from negpy.kernel.system.config import APP_CONFIG
 from negpy.services.assets import gear_preset_migration
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.gear_preset_migration import migrate_gear_presets
-from negpy.services.assets.presets import PRESET_NOTES_KEY, MetadataPresets, Presets, preset_notes, with_preset_notes
+from negpy.services.assets.presets import PRESET_NOTES_KEY, MetadataPresets, Presets, is_valid_preset_name, preset_notes, with_preset_notes
 
 # A frame number belongs to one frame, so it is not offered as a preset field.
 _UNPRESETABLE = {"capture_frame"}
@@ -717,3 +717,72 @@ class TestSecondReviewRound:
 
         expected = tooltip_with_shortcut("Write the selected preset's fields onto this frame", "metadata_preset_load")
         assert sidebar.metadata_preset_load_btn.toolTip() == expected
+
+
+class TestPresetNames:
+    def test_a_name_that_escapes_the_namespace_is_refused(self):
+        for name in ("../escaped", "..", "a/b", "", "   ", ".hidden", "trailing."):
+            assert not is_valid_preset_name(name)
+            with pytest.raises(ValueError):
+                MetadataPresets.save_preset(name, {"developer": "D-76"})
+
+    def test_names_users_actually_type_are_accepted(self):
+        for name in ("HP5 @ 800 · D-76", "Portra 400 (lab)", "6×7 120", "D-76 1+1"):
+            assert is_valid_preset_name(name)
+            MetadataPresets.save_preset(name, {"developer": "D-76"})
+            assert MetadataPresets.load_preset(name) == {"developer": "D-76"}
+
+    def test_a_case_only_rename_keeps_the_preset(self, presets_dir):
+        MetadataPresets.save_preset("hp5", {"developer": "D-76"})
+
+        assert MetadataPresets.rename_preset("hp5", "HP5") is True
+
+        assert MetadataPresets.list_presets() == ["HP5"]
+        assert MetadataPresets.load_preset("HP5") == {"developer": "D-76"}
+
+    def test_exists_is_case_folded(self):
+        MetadataPresets.save_preset("Portra", {"developer": "C-41"})
+        assert MetadataPresets.exists("portra")
+        assert MetadataPresets.exists("PORTRA")
+        assert not MetadataPresets.exists("Velvia")
+
+    def test_rename_refuses_an_unusable_target(self):
+        MetadataPresets.save_preset("HP5", {"developer": "D-76"})
+        assert MetadataPresets.rename_preset("HP5", "../evil") is False
+        assert MetadataPresets.list_presets() == ["HP5"]
+
+    def test_renaming_onto_another_preset_asks_first(self, qapp_dialog_library, monkeypatch):
+        dialog, _library = qapp_dialog_library
+        MetadataPresets.save_preset("Source", {"developer": "D-76"})
+        MetadataPresets.save_preset("Existing", {"scanning": "Flextight"})
+        dialog._select_category("metadata_presets")
+        dialog.item_list.setCurrentRow([dialog._item_label(i) for i in dialog._list_items].index("Source"))
+
+        dlg = MagicMock()
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+        dlg.name.return_value = "Existing"
+        dlg.selected.return_value = [r for r in _metadata_rows() if r.label == "Process"]
+        monkeypatch.setattr(
+            "negpy.desktop.view.widgets.gear_library_dialog.QMessageBox.question",
+            lambda *_a, **_k: QMessageBox.StandardButton.No,
+        )
+        with patch("negpy.desktop.view.widgets.gear_library_dialog.GranularSettingsDialog", return_value=dlg):
+            dialog._edit_preset()
+
+        # Declined: both presets survive untouched.
+        assert sorted(MetadataPresets.list_presets()) == ["Existing", "Source"]
+        assert MetadataPresets.load_preset("Existing") == {"scanning": "Flextight"}
+
+    def test_load_tooltip_follows_a_rebinding(self, sidebar: MetadataSidebar, monkeypatch) -> None:
+        import negpy.desktop.view.shortcut_registry as registry
+
+        assert "Ctrl+Shift+L" not in sidebar.metadata_preset_load_btn.toolTip()
+        monkeypatch.setattr(
+            registry,
+            "key_for",
+            lambda action_id, bindings=None: "Ctrl+Shift+L" if action_id == "metadata_preset_load" else "",
+        )
+
+        sidebar.apply_shortcut_tooltips()
+
+        assert "Ctrl+Shift+L" in sidebar.metadata_preset_load_btn.toolTip()

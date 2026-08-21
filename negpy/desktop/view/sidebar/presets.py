@@ -17,7 +17,7 @@ from negpy.desktop.view.styles.templates import wrap_tooltip
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.granular_settings_dialog import GranularSettingsDialog
 from negpy.domain.models import WorkspaceConfig
-from negpy.services.assets.presets import Presets
+from negpy.services.assets.presets import Presets, is_valid_preset_name
 
 _PRESET_EXCLUDED_SECTIONS = frozenset({"Crop", "Rotation"})
 
@@ -121,8 +121,8 @@ class PresetsSidebar(BaseSidebar):
             ask_name=True,
             exclude_sections=_PRESET_EXCLUDED_SECTIONS,
         )
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            Presets.save_preset(dlg.name(), selected_flat_dict(self.state.config, dlg.selected()))
+        if dlg.exec() == QDialog.DialogCode.Accepted and self._name_is_usable(dlg.name()):
+            Presets.save_preset(dlg.name().strip(), selected_flat_dict(self.state.config, dlg.selected()))
             self._refresh_presets(force=True)
 
     def _on_edit_clicked(self) -> None:
@@ -133,12 +133,28 @@ class PresetsSidebar(BaseSidebar):
         dlg = GranularSettingsDialog(self, cfg, name, ask_name=True, exclude_sections=_PRESET_EXCLUDED_SECTIONS)
         dlg.setWindowTitle("Edit Preset")
         dlg.set_name(name)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            new_name = dlg.name()
-            Presets.save_preset(new_name, selected_flat_dict(cfg, dlg.selected()))
-            if new_name != name:
-                Presets.delete_preset(name)
-            self._refresh_presets(force=True)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        new_name = dlg.name().strip()
+        if not self._name_is_usable(new_name, replacing=name):
+            return
+        Presets.save_preset(name, selected_flat_dict(cfg, dlg.selected()))
+        if new_name != name:
+            Presets.rename_preset(name, new_name)
+        self._refresh_presets(force=True)
+
+    def _name_is_usable(self, name: str, replacing: str = "") -> bool:
+        from PyQt6.QtWidgets import QMessageBox
+
+        if not is_valid_preset_name(name):
+            QMessageBox.warning(self, "Preset name", 'A preset name cannot contain / \\ : * ? " < > | or start or end with a dot.')
+            return False
+        if name.casefold() == replacing.casefold() or not replacing or not Presets.exists(name):
+            return True
+        return (
+            QMessageBox.question(self, "Replace preset", f"A preset named '{name}' already exists. Replace it?")
+            == QMessageBox.StandardButton.Yes
+        )
 
     def _on_delete_clicked(self) -> None:
         from PyQt6.QtWidgets import QMessageBox
