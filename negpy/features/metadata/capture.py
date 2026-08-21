@@ -226,7 +226,9 @@ def parse_dev_time(text: str) -> Optional[int]:
         minutes_only = float(raw)
     except ValueError:
         return None
-    return round(minutes_only * 60) if minutes_only >= 0 else None
+    if not math.isfinite(minutes_only) or minutes_only < 0:
+        return None
+    return round(minutes_only * 60)
 
 
 def format_dev_time(seconds: Optional[int]) -> str:
@@ -242,9 +244,10 @@ def parse_temperature(text: str) -> Optional[float]:
     if not raw:
         return None
     try:
-        return float(raw)
+        celsius = float(raw)
     except ValueError:
         return None
+    return celsius if math.isfinite(celsius) else None
 
 
 def format_temperature(celsius: Optional[float]) -> str:

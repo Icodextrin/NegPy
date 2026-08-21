@@ -123,6 +123,7 @@ class ShortcutManager:
             "flip_h": lambda: toolbar.flip("horizontal"),
             "flip_v": lambda: toolbar.flip("vertical"),
             "lock_bounds_toggle": lambda: controls.process_sidebar.lock_bounds_btn.toggle(),
+            "metadata_preset_load": lambda: right.metadata_sidebar.metadata_preset_load_btn.click(),
             "scan_setup": lambda: controls.sensor_sidebar.scan_setup_btn.click(),
             "scan_prescan": (lambda: right.scan_sidebar.prescan_btn.click() if getattr(right, "scan_sidebar", None) is not None else None),
             "mode_color_negative": lambda: controls.process_sidebar.mode_btns[0].click(),

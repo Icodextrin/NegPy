@@ -99,6 +99,7 @@ REGISTRY: dict[str, ShortcutEntry] = {
     "mask_spacer_dec": ShortcutEntry("", "Mask Spacer down", "Exposure"),
     "mask_spacer_inc": ShortcutEntry("", "Mask Spacer up", "Exposure"),
     "lock_bounds_toggle": ShortcutEntry("Alt+Q", "Toggle bounds lock", "Process"),
+    "metadata_preset_load": ShortcutEntry("", "Load the selected metadata preset onto this frame", "Actions"),
     "scan_setup": ShortcutEntry("", "Scanning setup wizard", "Process"),
     "scan_prescan": ShortcutEntry("", "Prescan and set crop (Plustek)", "Process"),
     "mode_color_negative": ShortcutEntry("", "Mode: Color Negative", "Process"),

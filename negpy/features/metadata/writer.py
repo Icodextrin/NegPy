@@ -100,6 +100,7 @@ _ASCII_SUBSTITUTIONS = str.maketrans(
     {
         "\u2022": "-",  # the bullet joining ImageDescription parts
         "\u00d7": "x",  # sheet-film sizes: 4x5, 8x10
+        "\u00b0": "",  # development temperature: "20 C"
         "\u2013": "-",
         "\u2014": "-",
         "\u2018": "'",

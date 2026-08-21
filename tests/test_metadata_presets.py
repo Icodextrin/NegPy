@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -20,14 +21,17 @@ from negpy.desktop.view.sidebar.metadata import MetadataSidebar
 from negpy.desktop.view.widgets.gear_library_dialog import GearLibraryDialog
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.metadata.gear_models import Camera, DevelopmentProcess, FilmStock, GearLibrary, ScanSetup
+from negpy.desktop.view.shortcut_registry import REGISTRY
+from negpy.features.metadata.capture import parse_dev_time, parse_temperature
 from negpy.features.metadata.models import GEAR_FIELDS, MetadataConfig
+from negpy.features.metadata.writer import _exif_ascii
 from negpy.features.metadata.payload import build_metadata_payload
 from negpy.services.assets.search import facts_for, match, parse_query
 from negpy.kernel.system.config import APP_CONFIG
 from negpy.services.assets import gear_preset_migration
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.gear_preset_migration import migrate_gear_presets
-from negpy.services.assets.presets import MetadataPresets, Presets
+from negpy.services.assets.presets import PRESET_NOTES_KEY, MetadataPresets, Presets, preset_notes, with_preset_notes
 
 # A frame number belongs to one frame, so it is not offered as a preset field.
 _UNPRESETABLE = {"capture_frame"}
@@ -92,6 +96,18 @@ def presets_dir(monkeypatch, tmp_path):
     """Never touch the user's own preset store."""
     monkeypatch.setattr(APP_CONFIG, "presets_dir", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture
+def qapp_dialog_library(monkeypatch, tmp_path):
+    """The library dialog on its Process page, over one saved recipe."""
+    monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+    library = GearLibrary(
+        processes=[DevelopmentProcess(id="p1", display_name="D-76", developer="D-76", time_seconds=570, temperature_c=20.0)]
+    )
+    dialog = GearLibraryDialog(library)
+    dialog._select_category("processes")
+    return dialog, library
 
 
 @pytest.fixture
@@ -450,3 +466,149 @@ class TestDilution:
         assert payload.developer_display() == "D-76 1+1"
         rows = dict(next(rows for title, rows in payload.to_preview_sections() if title == "Process"))
         assert rows["Developer"] == "D-76 1+1"
+
+
+class TestReviewFixes:
+    def test_migration_stays_pending_when_a_source_is_damaged(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        os.makedirs(APP_CONFIG.gear_dir, exist_ok=True)
+        path = os.path.join(APP_CONFIG.gear_dir, "gear_presets.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{ this is not json")
+        monkeypatch.setattr(gear_preset_migration.GearProfiles, "load_library", staticmethod(GearLibrary))
+        monkeypatch.setattr(gear_preset_migration, "get_resource_path", lambda _p: str(tmp_path / "bundled"))
+        repo = _FakeRepo()
+
+        migrate_gear_presets(repo)
+        assert repo.get_global_setting("gear_presets_migrated") is None
+        assert MetadataPresets.list_presets() == []
+
+        # Repaired on a later launch: the presets still convert.
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([{"id": "p1", "displayName": "FM2 combo", "cameraId": "c1"}], f)
+        migrate_gear_presets(repo)
+
+        assert repo.get_global_setting("gear_presets_migrated") is True
+        assert MetadataPresets.list_presets() == ["FM2 combo"]
+
+    def test_missing_source_still_completes(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        monkeypatch.setattr(gear_preset_migration.GearProfiles, "load_library", staticmethod(GearLibrary))
+        monkeypatch.setattr(gear_preset_migration, "get_resource_path", lambda _p: str(tmp_path / "bundled"))
+        repo = _FakeRepo()
+
+        migrate_gear_presets(repo)
+
+        assert repo.get_global_setting("gear_presets_migrated") is True
+
+    def test_parsers_reject_non_finite_input(self):
+        for text in ("inf", "-inf", "nan", "1e400"):
+            assert parse_dev_time(text) is None
+            assert parse_temperature(text) is None
+        assert parse_dev_time("9:30") == 570
+        assert parse_temperature("20") == 20.0
+
+    def test_exif_transliterates_the_degree_sign(self):
+        assert _exif_ascii("Development Temperature: 20 °C") == b"Development Temperature: 20 C"
+
+    def test_library_editor_keeps_a_value_while_the_time_is_half_typed(self, qapp_dialog_library):
+        dialog, library = qapp_dialog_library
+
+        dialog.dev_time_edit.setText("9:")
+        assert library.processes[0].time_seconds == 570
+        assert dialog.dev_time_edit.styleSheet() != ""
+
+        dialog.dev_time_edit.setText("11:15")
+        assert library.processes[0].time_seconds == 675
+        assert dialog.dev_time_edit.styleSheet() == ""
+
+    def test_library_editor_treats_blank_as_an_explicit_clear(self, qapp_dialog_library):
+        dialog, library = qapp_dialog_library
+
+        dialog.dev_time_edit.setText("")
+
+        assert library.processes[0].time_seconds is None
+        assert dialog.dev_time_edit.styleSheet() == ""
+
+    def test_load_action_is_registered_and_dispatches(self):
+        assert "metadata_preset_load" in REGISTRY
+        assert REGISTRY["metadata_preset_load"].default_key == ""
+        source = (Path(__file__).parent.parent / "negpy/desktop/view/keyboard_shortcuts.py").read_text()
+        assert '"metadata_preset_load": lambda: right.metadata_sidebar.metadata_preset_load_btn.click()' in source
+
+
+class TestFilmFormatTravelsWithGear:
+    def test_gear_row_carries_the_stock_format(self):
+        base = WorkspaceConfig()
+        source = replace(base, metadata=replace(base.metadata, film_stock_id="f1", film="Kodak Portra 400", format="120"))
+        data = selected_flat_dict(source, [r for r in _metadata_rows() if r.label == "Gear"])
+
+        assert data["format"] == "120"
+        assert "format_other" in data
+
+    def test_applying_a_120_preset_to_a_35mm_frame_updates_the_format(self):
+        base = WorkspaceConfig()
+        data = selected_flat_dict(
+            replace(base, metadata=replace(base.metadata, film_stock_id="f120", film="Portra 400", format="120")),
+            [r for r in _metadata_rows() if r.label == "Gear"],
+        )
+        target = replace(base, metadata=replace(base.metadata, format="35mm", film="HP5+"))
+
+        merged = apply_selected_fields(preset_config(data), target, rows_for_keys(data, "metadata"))
+
+        assert merged.metadata.format == "120"
+        assert merged.metadata.film == "Portra 400"
+
+    def test_format_is_no_longer_a_row_of_its_own(self):
+        assert [r.label for r in _metadata_rows() if r.label == "Format"] == []
+
+
+class TestPresetNotes:
+    def test_notes_round_trip_without_reaching_the_config(self):
+        MetadataPresets.save_preset("HP5", with_preset_notes({"developer": "D-76"}, "  9 min, agitate 10s  "))
+        data = MetadataPresets.load_preset("HP5")
+
+        assert data[PRESET_NOTES_KEY] == "9 min, agitate 10s"
+        assert preset_notes(data) == "9 min, agitate 10s"
+        # The reserved key never reaches from_flat_dict, and never looks like a stored field.
+        assert preset_config(data).metadata.developer == "D-76"
+        assert [r.label for r in rows_for_keys(data, "metadata")] == ["Process"]
+
+    def test_empty_notes_are_not_stored(self):
+        MetadataPresets.save_preset("Bare", with_preset_notes({"developer": "D-76"}, "   "))
+        assert MetadataPresets.load_preset("Bare") == {"developer": "D-76"}
+
+    def test_migration_carries_gear_preset_notes(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        os.makedirs(APP_CONFIG.gear_dir, exist_ok=True)
+        with open(os.path.join(APP_CONFIG.gear_dir, "gear_presets.json"), "w", encoding="utf-8") as f:
+            json.dump([{"id": "p1", "displayName": "Street combo", "cameraId": "c1", "notes": "the beater body"}], f)
+        monkeypatch.setattr(gear_preset_migration.GearProfiles, "load_library", staticmethod(GearLibrary))
+        monkeypatch.setattr(gear_preset_migration, "get_resource_path", lambda _p: str(tmp_path / "bundled"))
+
+        migrate_gear_presets(_FakeRepo())
+
+        assert preset_notes(MetadataPresets.load_preset("Street combo")) == "the beater body"
+
+    def test_manage_pane_edits_notes_in_place(self, qapp_dialog_library):
+        dialog, _library = qapp_dialog_library
+        MetadataPresets.save_preset("HP5", {"developer": "D-76"})
+        dialog._select_category("metadata_presets")
+
+        dialog.preset_notes_edit.setText("stand development")
+
+        assert preset_notes(MetadataPresets.load_preset("HP5")) == "stand development"
+        assert MetadataPresets.load_preset("HP5")["developer"] == "D-76"
+
+    def test_changing_which_fields_a_preset_stores_keeps_its_notes(self, qapp_dialog_library):
+        dialog, _library = qapp_dialog_library
+        MetadataPresets.save_preset("HP5", with_preset_notes({"developer": "D-76"}, "keep me"))
+        dialog._select_category("metadata_presets")
+        dlg = MagicMock()
+        dlg.exec.return_value = QDialog.DialogCode.Accepted
+        dlg.name.return_value = "HP5"
+        dlg.selected.return_value = [r for r in _metadata_rows() if r.label == "Process"]
+        with patch("negpy.desktop.view.widgets.gear_library_dialog.GranularSettingsDialog", return_value=dlg):
+            dialog._edit_preset()
+
+        assert preset_notes(MetadataPresets.load_preset("HP5")) == "keep me"

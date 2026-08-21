@@ -3,6 +3,29 @@ import os
 from typing import List, Dict, Any, Optional
 from negpy.kernel.system.config import APP_CONFIG
 
+# Preset-level data that is not a config field. Reserved keys are stripped before a preset
+# reaches WorkspaceConfig.from_flat_dict, which would otherwise warn about them as unknown.
+PRESET_NOTES_KEY = "__notes"
+_RESERVED_PRESET_KEYS = frozenset({PRESET_NOTES_KEY})
+
+
+def preset_fields(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Just the config fields, without the preset's own bookkeeping."""
+    return {k: v for k, v in data.items() if k not in _RESERVED_PRESET_KEYS}
+
+
+def preset_notes(data: Dict[str, Any]) -> str:
+    value = data.get(PRESET_NOTES_KEY)
+    return str(value) if value else ""
+
+
+def with_preset_notes(fields: Dict[str, Any], notes: str) -> Dict[str, Any]:
+    """A preset payload ready to save: fields plus notes, which are dropped when empty."""
+    out = preset_fields(fields)
+    if notes.strip():
+        out[PRESET_NOTES_KEY] = notes.strip()
+    return out
+
 
 class Presets:
     """

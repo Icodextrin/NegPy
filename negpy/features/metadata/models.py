@@ -66,6 +66,10 @@ GEAR_FIELDS: tuple[str, ...] = (
     "film_manufacturer",
     "film_iso",
     "film_color_type",
+    # The stock carries the film's format, so it travels with the pick: split off, a preset
+    # for a 120 stock would leave a 35mm frame claiming 35mm while naming the 120 stock.
+    "format",
+    "format_other",
 )
 
 

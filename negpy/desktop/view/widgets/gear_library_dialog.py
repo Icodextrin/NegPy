@@ -39,7 +39,7 @@ from negpy.features.metadata.gear_models import (
 )
 from negpy.features.metadata.models import PUSH_PULL_LABELS, PUSH_PULL_VALUES
 from negpy.services.assets.gear import GearProfiles
-from negpy.services.assets.presets import MetadataPresets
+from negpy.services.assets.presets import MetadataPresets, preset_notes, with_preset_notes
 
 _CATEGORIES = [
     ("cameras", "Cameras"),
@@ -192,7 +192,7 @@ class GearLibraryDialog(QDialog):
         self.color_combo = QComboBox()
         self.color_combo.addItems([e.value for e in FilmColorType])
         self.developer_edit = QLineEdit()
-        self.developer_edit.setPlaceholderText("e.g. D-76 1+1")
+        self.developer_edit.setPlaceholderText("e.g. D-76")
         self.push_pull_combo = QComboBox()
         self.push_pull_combo.addItems([PUSH_PULL_LABELS[v] for v in PUSH_PULL_VALUES])
         self.dilution_edit = QLineEdit()
@@ -265,7 +265,14 @@ class GearLibraryDialog(QDialog):
         preset_layout.addWidget(self.preset_name_label)
         preset_layout.addLayout(self.preset_fields_layout)
         preset_layout.addWidget(self.preset_empty_label)
-        preset_layout.addWidget(hint_label("Edit a value in the Metadata panel, then save over the preset."))
+        notes_row = QFormLayout()
+        notes_row.setSpacing(8)
+        self.preset_notes_edit = QLineEdit()
+        self.preset_notes_edit.setPlaceholderText("Notes for this preset")
+        self.preset_notes_edit.textChanged.connect(self._on_preset_notes_changed)
+        notes_row.addRow(field_label("Notes"), self.preset_notes_edit)
+        preset_layout.addLayout(notes_row)
+        preset_layout.addWidget(hint_label("Edit a stored value in the Metadata panel, then save over the preset."))
         self.preset_panel.setVisible(False)
         right_layout.addWidget(self.preset_panel)
         right_layout.addStretch()
@@ -401,6 +408,20 @@ class GearLibraryDialog(QDialog):
         self._set_form_editable(isinstance(item, str) or not item.is_bundled)
         self._populate_form(item)
 
+    def _parsed_or_kept(self, edit: QLineEdit, parse, current):
+        """Every keystroke saves, so a half-typed "9:" must not erase the stored value.
+        Blank is an explicit clear; unreadable text keeps what is stored and marks the field."""
+        text = edit.text().strip()
+        if not text:
+            self._mark_invalid(edit, False)
+            return None
+        value = parse(text)
+        self._mark_invalid(edit, value is None)
+        return current if value is None else value
+
+    def _mark_invalid(self, edit: QLineEdit, invalid: bool) -> None:
+        edit.setStyleSheet(f"border: 1px solid {THEME.accent_secondary};" if invalid else "")
+
     def _set_form_editable(self, enabled: bool) -> None:
         for _label, widget in self._form_rows.values():
             widget.setEnabled(enabled)
@@ -431,6 +452,8 @@ class GearLibraryDialog(QDialog):
                 self.push_pull_combo.setCurrentIndex(_push_pull_index(item.push_pull))
                 self.dev_time_edit.setText(format_dev_time(item.time_seconds))
                 self.dev_temp_edit.setText(format_temperature(item.temperature_c))
+                self._mark_invalid(self.dev_time_edit, False)
+                self._mark_invalid(self.dev_temp_edit, False)
                 self.notes_edit.setText(item.notes)
             elif isinstance(item, ScanSetup):
                 self.display_name_edit.setText(item.display_name)
@@ -454,8 +477,14 @@ class GearLibraryDialog(QDialog):
     def _populate_preset(self, name: str) -> None:
         while self.preset_fields_layout.rowCount():
             self.preset_fields_layout.removeRow(0)
-        values = preset_values(MetadataPresets.load_preset(name) or {}, "metadata")
+        data = MetadataPresets.load_preset(name) or {}
+        values = preset_values(data, "metadata")
         self.preset_name_label.setText(name)
+        self._updating = True
+        try:
+            self.preset_notes_edit.setText(preset_notes(data))
+        finally:
+            self._updating = False
         for label, value in values:
             value_label = QLabel(value)
             value_label.setWordWrap(True)
@@ -463,8 +492,21 @@ class GearLibraryDialog(QDialog):
             self.preset_fields_layout.addRow(field_label(label), value_label)
         self.preset_empty_label.setVisible(not values)
 
+    def _on_preset_notes_changed(self, text: str) -> None:
+        name = self._selected_preset()
+        data = MetadataPresets.load_preset(name) if name else None
+        if self._updating or data is None:
+            return
+        MetadataPresets.save_preset(name, with_preset_notes(data, text))
+        self.presets_changed.emit()
+
     def _clear_form(self) -> None:
         self.preset_name_label.setText("No preset selected")
+        self._updating = True
+        try:
+            self.preset_notes_edit.clear()
+        finally:
+            self._updating = False
         while self.preset_fields_layout.rowCount():
             self.preset_fields_layout.removeRow(0)
         self.preset_empty_label.setVisible(False)
@@ -515,8 +557,8 @@ class GearLibraryDialog(QDialog):
             item.developer = self.developer_edit.text().strip()
             item.dilution = self.dilution_edit.text().strip()
             item.push_pull = PUSH_PULL_VALUES[self.push_pull_combo.currentIndex()]
-            item.time_seconds = parse_dev_time(self.dev_time_edit.text())
-            item.temperature_c = parse_temperature(self.dev_temp_edit.text())
+            item.time_seconds = self._parsed_or_kept(self.dev_time_edit, parse_dev_time, item.time_seconds)
+            item.temperature_c = self._parsed_or_kept(self.dev_temp_edit, parse_temperature, item.temperature_c)
             item.notes = self.notes_edit.text().strip()
         elif isinstance(item, ScanSetup):
             item.display_name = self.display_name_edit.text().strip()
@@ -570,7 +612,7 @@ class GearLibraryDialog(QDialog):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         new_name = dlg.name()
-        MetadataPresets.save_preset(new_name, selected_flat_dict(cfg, dlg.selected()))
+        MetadataPresets.save_preset(new_name, with_preset_notes(selected_flat_dict(cfg, dlg.selected()), preset_notes(data)))
         if new_name != name:
             MetadataPresets.delete_preset(name)
         self._rebuild_item_list(select_id=new_name)

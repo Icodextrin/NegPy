@@ -17,6 +17,7 @@ from negpy.domain.models import WorkspaceConfig
 from negpy.features.metadata.capture import place_summary
 from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, PUSH_PULL_LABELS, SCANNING_FIELDS
 from negpy.features.process.models import invalidate_local_bounds
+from negpy.services.assets.presets import preset_fields
 
 
 class SettingRow:
@@ -85,10 +86,12 @@ def _fmt_process(values: tuple) -> str:
 
 def _fmt_gear(values: tuple) -> str:
     v = dict(zip(GEAR_FIELDS, values))
+    film_format = v["format_other"] if v["format"] == "Other" and v["format_other"] else v["format"]
     parts = [
         " ".join(str(x) for x in (v["camera_make"], v["camera_model"]) if x),
         " ".join(str(x) for x in (v["lens_make"], v["lens_model"]) if x),
         str(v["film"] or ""),
+        str(film_format or ""),
     ]
     return " · ".join(p for p in parts if p) or "—"
 
@@ -227,7 +230,6 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
     )),
     ("Metadata", (
         _row("Gear", "metadata", *GEAR_FIELDS, fmt=_fmt_gear),
-        _row("Format", "metadata", "format", "format_other", fmt=lambda v: (v[1] if v[0] == "Other" and v[1] else v[0]) or "—"),
         _row("Capture Date", "metadata", "capture_date"),
         _row(
             "Place",
@@ -374,13 +376,14 @@ def preset_config(data: Mapping[str, Any]) -> WorkspaceConfig:
     """A preset's stored fields over defaults, so pickers show the preset's own
     values rather than the current image's."""
     base = WorkspaceConfig().to_dict()
-    base.update(data)
+    base.update(preset_fields(data))
     return WorkspaceConfig.from_flat_dict(base)
 
 
 def rows_for_keys(data: Mapping[str, Any], section: str = "") -> list[SettingRow]:
     """The rows a preset stores, optionally narrowed to one config section."""
-    return [r for r in all_rows() if (not section or r.section == section) and any(f in data for f in r.fields)]
+    fields = preset_fields(data)
+    return [r for r in all_rows() if (not section or r.section == section) and any(f in fields for f in r.fields)]
 
 
 def preset_values(data: Mapping[str, Any], section: str = "") -> list[tuple[str, str]]:
