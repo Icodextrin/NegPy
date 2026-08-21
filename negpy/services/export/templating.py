@@ -6,7 +6,7 @@ from typing import Optional, Union
 from jinja2.sandbox import SandboxedEnvironment
 
 from negpy.domain.models import ExportConfig, ExportPreset, ExportResolutionMode
-from negpy.features.metadata.capture import parse_capture_date
+from negpy.features.metadata.capture import format_dev_time, format_temperature, parse_capture_date
 from negpy.features.metadata.models import MetadataConfig
 from negpy.kernel.system.logging import get_logger
 
@@ -94,7 +94,10 @@ def _metadata_context(original_stem: str, metadata: Optional[MetadataConfig]) ->
         "film_color_type": _path_safe(meta.film_color_type),
         "film_format": _path_safe(_film_format(meta)),
         "developer": _path_safe(meta.developer),
+        "dilution": _path_safe(meta.process_dilution),
         "push_pull": meta.push_pull,
+        "development_time": _path_safe(format_dev_time(meta.process_time_seconds).replace(":", "-")),
+        "development_temperature": _path_safe(format_temperature(meta.process_temperature_c)),
         "scanning": _path_safe(meta.scanning),
         "exposure": _path_safe(meta.exposure_override),
         "capture_date": captured.compact() if captured else "",
@@ -132,7 +135,7 @@ def render_export_filename(
     - roll / frame / frame_padded: Scanlight capture roll and frame (metadata or stem parse)
     - camera / camera_make / camera_model, lens / lens_make / lens_model / focal_length
     - film / film_iso / film_manufacturer / film_color_type / film_format
-    - developer / push_pull / scanning / exposure
+    - developer / dilution / push_pull / development_time / development_temperature / scanning / exposure
 
     ``composite`` suffixes the original name (e.g. "HDR"), so a merged frame does not
     write over the export of the source file it is named after.

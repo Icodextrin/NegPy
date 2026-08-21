@@ -1,4 +1,4 @@
-"""JSON-backed gear library (cameras, lenses, film stocks, gear presets)."""
+"""JSON-backed metadata library (cameras, lenses, film stocks, processes, scan setups)."""
 
 from __future__ import annotations
 
@@ -8,10 +8,11 @@ from typing import TypeVar
 
 from negpy.features.metadata.gear_models import (
     Camera,
+    DevelopmentProcess,
     FilmStock,
     GearLibrary,
-    GearPreset,
     Lens,
+    ScanSetup,
 )
 from negpy.kernel.system.config import APP_CONFIG
 from negpy.kernel.system.paths import get_resource_path
@@ -21,7 +22,8 @@ T = TypeVar("T")
 _CAMERAS_FILE = "cameras.json"
 _LENSES_FILE = "lenses.json"
 _FILM_STOCKS_FILE = "film_stocks.json"
-_GEAR_PRESETS_FILE = "gear_presets.json"
+_PROCESSES_FILE = "processes.json"
+_SCAN_SETUPS_FILE = "scan_setups.json"
 
 
 class GearProfiles:
@@ -84,7 +86,7 @@ class GearProfiles:
     def load_library() -> GearLibrary:
         gear_dir = GearProfiles._gear_dir()
         stamp = []
-        for fname in (_CAMERAS_FILE, _LENSES_FILE, _FILM_STOCKS_FILE, _GEAR_PRESETS_FILE):
+        for fname in (_CAMERAS_FILE, _LENSES_FILE, _FILM_STOCKS_FILE, _PROCESSES_FILE, _SCAN_SETUPS_FILE):
             try:
                 stamp.append(os.stat(os.path.join(gear_dir, fname)).st_mtime_ns)
             except OSError:
@@ -97,7 +99,8 @@ class GearProfiles:
             cameras=GearProfiles._load_merged(_CAMERAS_FILE, Camera),
             lenses=GearProfiles._load_merged(_LENSES_FILE, Lens),
             film_stocks=GearProfiles._load_merged(_FILM_STOCKS_FILE, FilmStock),
-            gear_presets=GearProfiles._load_merged(_GEAR_PRESETS_FILE, GearPreset),
+            processes=GearProfiles._load_merged(_PROCESSES_FILE, DevelopmentProcess),
+            scan_setups=GearProfiles._load_merged(_SCAN_SETUPS_FILE, ScanSetup),
         )
         GearProfiles._library_cache = (key, library)
         return library
@@ -115,15 +118,20 @@ class GearProfiles:
         GearProfiles._write_list(os.path.join(GearProfiles._gear_dir(), _FILM_STOCKS_FILE), film_stocks)
 
     @staticmethod
-    def save_gear_presets(presets: list[GearPreset]) -> None:
-        GearProfiles._write_list(os.path.join(GearProfiles._gear_dir(), _GEAR_PRESETS_FILE), presets)
+    def save_processes(processes: list[DevelopmentProcess]) -> None:
+        GearProfiles._write_list(os.path.join(GearProfiles._gear_dir(), _PROCESSES_FILE), processes)
+
+    @staticmethod
+    def save_scan_setups(scan_setups: list[ScanSetup]) -> None:
+        GearProfiles._write_list(os.path.join(GearProfiles._gear_dir(), _SCAN_SETUPS_FILE), scan_setups)
 
     @staticmethod
     def save_library(library: GearLibrary) -> None:
         GearProfiles.save_cameras([c for c in library.cameras if not c.is_bundled])
         GearProfiles.save_lenses([lens for lens in library.lenses if not lens.is_bundled])
         GearProfiles.save_film_stocks([f for f in library.film_stocks if not f.is_bundled])
-        GearProfiles.save_gear_presets([p for p in library.gear_presets if not p.is_bundled])
+        GearProfiles.save_processes([p for p in library.processes if not p.is_bundled])
+        GearProfiles.save_scan_setups([s for s in library.scan_setups if not s.is_bundled])
 
     @staticmethod
     def ensure_user_dir() -> None:

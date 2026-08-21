@@ -1,4 +1,4 @@
-"""Domain models for the analog gear library (cameras, lenses, film stocks, presets)."""
+"""Domain models for the metadata library (cameras, lenses, film stocks, processes, scan setups)."""
 
 from __future__ import annotations
 
@@ -59,6 +59,20 @@ class FilmColorType(str, Enum):
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+def _opt_int(value: Any) -> Optional[int]:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(value: Any) -> Optional[float]:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass
@@ -215,45 +229,98 @@ class FilmStock:
 
 
 @dataclass
-class GearPreset:
+class DevelopmentProcess:
+    """A development recipe: what the film was souped in, and by how much."""
+
     id: str = field(default_factory=_new_id)
     display_name: str = ""
-    camera_id: str = ""
-    lens_id: str = ""
-    film_stock_id: str = ""
+    developer: str = ""
+    dilution: str = ""
+    push_pull: int = 0
+    time_seconds: Optional[int] = None
+    temperature_c: Optional[float] = None
     notes: str = ""
     is_bundled: bool = False
+
+    @property
+    def resolved_display_name(self) -> str:
+        if self.display_name.strip():
+            return self.display_name.strip()
+        if self.developer.strip():
+            return " ".join(p for p in (self.developer.strip(), self.dilution.strip()) if p)
+        return "Unnamed process"
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "displayName": self.display_name,
-            "cameraId": self.camera_id or None,
-            "lensId": self.lens_id or None,
-            "filmStockId": self.film_stock_id or None,
+            "developer": self.developer,
+            "dilution": self.dilution,
+            "pushPull": self.push_pull,
+            "timeSeconds": self.time_seconds,
+            "temperatureC": self.temperature_c,
             "notes": self.notes or None,
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "GearPreset":
+    def from_dict(cls, data: dict[str, Any]) -> "DevelopmentProcess":
         return cls(
             id=str(data.get("id") or _new_id()),
             display_name=str(data.get("displayName") or data.get("display_name") or ""),
-            camera_id=str(data.get("cameraId") or data.get("camera_id") or ""),
-            lens_id=str(data.get("lensId") or data.get("lens_id") or ""),
-            film_stock_id=str(data.get("filmStockId") or data.get("film_stock_id") or ""),
+            developer=str(data.get("developer") or ""),
+            dilution=str(data.get("dilution") or ""),
+            push_pull=int(data.get("pushPull") or data.get("push_pull") or 0),
+            time_seconds=_opt_int(data.get("timeSeconds", data.get("time_seconds"))),
+            temperature_c=_opt_float(data.get("temperatureC", data.get("temperature_c"))),
+            notes=str(data.get("notes") or ""),
+        )
+
+
+@dataclass
+class ScanSetup:
+    """A digitizing setup, named so the same rig is written the same way every time."""
+
+    id: str = field(default_factory=_new_id)
+    display_name: str = ""
+    scanning: str = ""
+    notes: str = ""
+    is_bundled: bool = False
+
+    @property
+    def resolved_display_name(self) -> str:
+        if self.display_name.strip():
+            return self.display_name.strip()
+        if self.scanning.strip():
+            return self.scanning.strip()
+        return "Unnamed scan setup"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "displayName": self.display_name,
+            "scanning": self.scanning,
+            "notes": self.notes or None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ScanSetup":
+        return cls(
+            id=str(data.get("id") or _new_id()),
+            display_name=str(data.get("displayName") or data.get("display_name") or ""),
+            scanning=str(data.get("scanning") or ""),
             notes=str(data.get("notes") or ""),
         )
 
 
 @dataclass
 class GearLibrary:
-    """In-memory snapshot of all gear library collections."""
+    """In-memory snapshot of all library collections."""
 
     cameras: list[Camera] = field(default_factory=list)
     lenses: list[Lens] = field(default_factory=list)
     film_stocks: list[FilmStock] = field(default_factory=list)
-    gear_presets: list[GearPreset] = field(default_factory=list)
+    processes: list[DevelopmentProcess] = field(default_factory=list)
+    scan_setups: list[ScanSetup] = field(default_factory=list)
 
     def get_camera(self, camera_id: str) -> Optional[Camera]:
         return next((c for c in self.cameras if c.id == camera_id), None)
@@ -264,5 +331,8 @@ class GearLibrary:
     def get_film_stock(self, film_stock_id: str) -> Optional[FilmStock]:
         return next((f for f in self.film_stocks if f.id == film_stock_id), None)
 
-    def get_gear_preset(self, preset_id: str) -> Optional[GearPreset]:
-        return next((p for p in self.gear_presets if p.id == preset_id), None)
+    def get_process(self, process_id: str) -> Optional[DevelopmentProcess]:
+        return next((p for p in self.processes if p.id == process_id), None)
+
+    def get_scan_setup(self, scan_setup_id: str) -> Optional[ScanSetup]:
+        return next((s for s in self.scan_setups if s.id == scan_setup_id), None)

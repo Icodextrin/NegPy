@@ -2,6 +2,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+# Panel order: strongest push first.
+PUSH_PULL_VALUES: tuple[int, ...] = (3, 2, 1, 0, -1, -2, -3)
+
 PUSH_PULL_LABELS = {
     -3: "Pull -3",
     -2: "Pull -2",
@@ -37,6 +40,34 @@ DESCRIPTION_FIELD_LABELS: dict[str, str] = {
 DEFAULT_DESCRIPTION_FIELDS: tuple[str, ...] = ("camera", "lens", "film", "iso")
 _DESCRIPTION_FIELD_SET = frozenset(DESCRIPTION_FIELD_ORDER)
 
+# One library pick and every value read from it. Copied and stored as a unit — split,
+# a pasted camera would sit under another frame's lens in the panel.
+PROCESS_FIELDS: tuple[str, ...] = (
+    "developer",
+    "process_dilution",
+    "push_pull",
+    "process_time_seconds",
+    "process_temperature_c",
+    "process_id",
+)
+SCANNING_FIELDS: tuple[str, ...] = ("scanning", "scanning_id")
+
+GEAR_FIELDS: tuple[str, ...] = (
+    "camera_id",
+    "lens_id",
+    "film_stock_id",
+    "camera_make",
+    "camera_model",
+    "lens_make",
+    "lens_model",
+    "focal_length_mm",
+    "max_aperture",
+    "film",
+    "film_manufacturer",
+    "film_iso",
+    "film_color_type",
+)
+
 
 def normalize_description_fields(fields: object) -> tuple[str, ...]:
     """Keep known keys in canonical order (JSON lists round-trip cleanly)."""
@@ -69,7 +100,6 @@ class MetadataConfig:
     """
 
     # Gear library references (empty = manual entry / not linked)
-    gear_preset_id: str = ""
     camera_id: str = ""
     lens_id: str = ""
     film_stock_id: str = ""
@@ -88,8 +118,15 @@ class MetadataConfig:
     film: str = ""
     format: str = ""  # "35mm" | "120" | "4×5" | "8×10" | "110" | "Other" | ""
     format_other: str = ""  # shown when format == "Other"
+    # Library references for the development recipe and the digitizing setup
+    process_id: str = ""
+    scanning_id: str = ""
+
     developer: str = ""
+    process_dilution: str = ""  # free text: "1+50", "1+1", "stock"
     push_pull: int = 0  # -3..+3, 0 = Normal
+    process_time_seconds: Optional[int] = None
+    process_temperature_c: Optional[float] = None
     scanning: str = ""
     sync_to_batch: bool = False
 

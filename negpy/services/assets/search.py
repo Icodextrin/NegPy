@@ -13,10 +13,10 @@ from datetime import datetime
 from typing import Any, Optional
 
 FLAG_FIELDS = frozenset({"keeper", "rejected", "edited"})
-NUMERIC_FIELDS = frozenset({"iso", "frame", "push"})
+NUMERIC_FIELDS = frozenset({"iso", "frame", "push", "devtime", "temp"})
 # shot is truncated ISO-8601, so the prefix comparison below orders it without parsing a date.
 TEXT_FIELDS = frozenset(
-    {"name", "path", "ext", "film", "camera", "lens", "developer", "format", "scanning", "roll", "date", "shot", "place"}
+    {"name", "path", "ext", "film", "camera", "lens", "developer", "dilution", "format", "scanning", "roll", "date", "shot", "place"}
 )
 FIELDS = FLAG_FIELDS | NUMERIC_FIELDS | TEXT_FIELDS
 
@@ -132,6 +132,10 @@ def facts_for(asset: dict, config: Any = None) -> dict[str, Any]:
             "camera": " ".join(p for p in (meta.camera_make, meta.camera_model) if p).casefold(),
             "lens": " ".join(p for p in (meta.lens_make, meta.lens_model) if p).casefold(),
             "developer": meta.developer.casefold(),
+            "dilution": meta.process_dilution.casefold(),
+            # Minutes, the unit the panel and the query are written in.
+            "devtime": None if meta.process_time_seconds is None else meta.process_time_seconds / 60,
+            "temp": meta.process_temperature_c,
             "format": (meta.format_other if meta.format == "Other" else meta.format).casefold(),
             "scanning": meta.scanning.casefold(),
             "roll": " ".join(p for p in (meta.capture_roll, config.process.roll_name or "") if p).casefold(),

@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 import qtawesome as qta
 from negpy.desktop.settings_catalog import (
     CATALOG,
+    preset_config,
     preset_summary,
     selected_flat_dict,
 )
@@ -107,14 +108,8 @@ class PresetsSidebar(BaseSidebar):
             self.controller.request_render()
 
     def _preset_config(self, name: str) -> WorkspaceConfig | None:
-        """The preset's stored fields over defaults, so pickers show the preset's
-        own values, not the current image's."""
         data = Presets.load_preset(name)
-        if not data:
-            return None
-        base = WorkspaceConfig().to_dict()
-        base.update(data)
-        return WorkspaceConfig.from_flat_dict(base)
+        return preset_config(data) if data else None
 
     def _on_save_clicked(self) -> None:
         if not self.state.current_file_hash:

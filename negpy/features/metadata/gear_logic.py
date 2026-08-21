@@ -1,17 +1,17 @@
-"""Resolve gear library selections into MetadataConfig updates."""
+"""Resolve library selections into MetadataConfig updates."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from typing import Optional, Union
 
-from negpy.features.metadata.gear_models import Camera, FilmStock, GearLibrary, GearPreset, Lens
-from negpy.features.metadata.models import MetadataConfig
+from negpy.features.metadata.gear_models import Camera, DevelopmentProcess, FilmStock, GearLibrary, Lens, ScanSetup
+from negpy.features.metadata.models import PUSH_PULL_LABELS, MetadataConfig
 
-GearItem = Union[Camera, Lens, FilmStock, GearPreset]
+GearItem = Union[Camera, Lens, FilmStock, DevelopmentProcess, ScanSetup]
 
 
-def gear_search_text(item: GearItem, library: Optional[GearLibrary] = None) -> str:
+def gear_search_text(item: GearItem) -> str:
     """Lowercase searchable text for substring filtering."""
     parts: list[str] = []
 
@@ -33,61 +33,36 @@ def gear_search_text(item: GearItem, library: Optional[GearLibrary] = None) -> s
             item.format.value,
             item.color_type.value,
         ]
-    elif isinstance(item, GearPreset):
-        parts = [item.display_name, item.notes]
-        if library is not None:
-            cam = library.get_camera(item.camera_id)
-            lens = library.get_lens(item.lens_id)
-            stock = library.get_film_stock(item.film_stock_id)
-            if cam:
-                parts.extend([cam.resolved_display_name, cam.make, cam.model])
-            if lens:
-                parts.extend([lens.resolved_display_name, lens.make, lens.lens_model])
-            if stock:
-                parts.extend([stock.resolved_display_name, stock.manufacturer, stock.stock_name])
+    elif isinstance(item, DevelopmentProcess):
+        parts = [item.display_name, item.developer, item.dilution, item.notes, PUSH_PULL_LABELS.get(item.push_pull, "")]
+    elif isinstance(item, ScanSetup):
+        parts = [item.display_name, item.scanning, item.notes]
 
     return " ".join(p.strip() for p in parts if p and str(p).strip()).lower()
 
 
-def matches_gear_filter(item: GearItem, query: str, library: Optional[GearLibrary] = None) -> bool:
+def matches_gear_filter(item: GearItem, query: str) -> bool:
     needle = query.strip().lower()
     if not needle:
         return True
-    return needle in gear_search_text(item, library)
+    return needle in gear_search_text(item)
 
 
 def metadata_from_gear(
     config: MetadataConfig,
     library: GearLibrary,
     *,
-    gear_preset_id: Optional[str] = None,
     camera_id: Optional[str] = None,
     lens_id: Optional[str] = None,
     film_stock_id: Optional[str] = None,
-    clear_preset: bool = False,
 ) -> MetadataConfig:
     """Build updated MetadataConfig from gear library selections.
 
     Pass ``None`` (default) to leave an id unchanged; pass ``""`` to clear it.
     """
-    if clear_preset:
-        preset_id = ""
-    elif gear_preset_id is not None:
-        preset_id = gear_preset_id
-    else:
-        preset_id = config.gear_preset_id
-
     cam_id = config.camera_id if camera_id is None else camera_id
     lens_id_val = config.lens_id if lens_id is None else lens_id
     film_id = config.film_stock_id if film_stock_id is None else film_stock_id
-
-    if preset_id:
-        preset = library.get_gear_preset(preset_id)
-        if preset:
-            # Preset is authoritative: empty preset slots clear manual picks.
-            cam_id = preset.camera_id
-            lens_id_val = preset.lens_id
-            film_id = preset.film_stock_id
 
     camera_make = ""
     camera_model = ""
@@ -126,7 +101,6 @@ def metadata_from_gear(
 
     return replace(
         config,
-        gear_preset_id=preset_id,
         camera_id=cam_id,
         lens_id=lens_id_val,
         film_stock_id=film_id,
@@ -142,3 +116,27 @@ def metadata_from_gear(
         format=film_format if film_id else config.format,
         film_color_type=film_color_type,
     )
+
+
+def metadata_from_process(config: MetadataConfig, library: GearLibrary, process_id: str) -> MetadataConfig:
+    """Apply a saved development recipe; an empty id clears the link, not the text."""
+    process = library.get_process(process_id) if process_id else None
+    if process is None:
+        return replace(config, process_id="")
+    return replace(
+        config,
+        process_id=process.id,
+        developer=process.developer,
+        process_dilution=process.dilution,
+        push_pull=process.push_pull,
+        process_time_seconds=process.time_seconds,
+        process_temperature_c=process.temperature_c,
+    )
+
+
+def metadata_from_scan_setup(config: MetadataConfig, library: GearLibrary, scan_setup_id: str) -> MetadataConfig:
+    """Apply a saved digitizing setup; an empty id clears the link, not the text."""
+    setup = library.get_scan_setup(scan_setup_id) if scan_setup_id else None
+    if setup is None:
+        return replace(config, scanning_id="")
+    return replace(config, scanning_id=setup.id, scanning=setup.scanning)

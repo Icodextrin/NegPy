@@ -1,4 +1,4 @@
-"""Capture time and place: parse, validate, and convert for EXIF/XMP."""
+"""Capture time and place, and development time: parse, validate, and convert for EXIF/XMP."""
 
 from __future__ import annotations
 
@@ -203,3 +203,51 @@ def tile2deg(x: float, y: float, zoom: int) -> tuple[float, float]:
     lon = x / n * 360.0 - 180.0
     lat = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * y / n))))
     return lat, lon
+
+
+DEV_TIME_HINT = "mm:ss or minutes"
+
+
+def parse_dev_time(text: str) -> Optional[int]:
+    """Seconds from "9:30" or from plain minutes ("9", "9.5"). None when unreadable."""
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        mins, _, secs = raw.partition(":")
+        try:
+            minutes, seconds = int(mins or 0), int(secs)
+        except ValueError:
+            return None
+        if seconds >= 60 or minutes < 0 or seconds < 0:
+            return None
+        return minutes * 60 + seconds
+    try:
+        minutes_only = float(raw)
+    except ValueError:
+        return None
+    return round(minutes_only * 60) if minutes_only >= 0 else None
+
+
+def format_dev_time(seconds: Optional[int]) -> str:
+    """Seconds as mm:ss; empty when unset."""
+    if seconds is None:
+        return ""
+    return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+
+def parse_temperature(text: str) -> Optional[float]:
+    """Degrees Celsius from free text ("20", "20.5", "20°C"). None when unreadable."""
+    raw = (text or "").strip().rstrip("Cc°").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def format_temperature(celsius: Optional[float]) -> str:
+    if celsius is None:
+        return ""
+    return f"{celsius:g}"

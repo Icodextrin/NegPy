@@ -67,6 +67,9 @@ DROPPED_KEYS: frozenset[str] = frozenset(
         # Lith's bool became the alt_process enum it shares with Cyanotype
         # (migrate_flat_config reads it before this pop).
         "lith_enabled",
+        # Gear presets merged into metadata presets, which store the resolved gear
+        # fields rather than a library reference (services/assets/gear_preset_migration.py).
+        "gear_preset_id",
     }
 )
 

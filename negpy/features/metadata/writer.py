@@ -159,8 +159,14 @@ def _build_custom_exif(payload: MetadataPayload) -> dict:
         user_comment_parts["format"] = payload.film_format
     if payload.developer:
         user_comment_parts["developer"] = payload.developer
+    if payload.dilution:
+        user_comment_parts["dilution"] = payload.dilution
     if payload.push_pull and payload.push_pull != "Normal":
         user_comment_parts["push_pull"] = payload.push_pull
+    if payload.development_time:
+        user_comment_parts["development_time"] = payload.development_time
+    if payload.development_temperature:
+        user_comment_parts["development_temperature"] = payload.development_temperature
 
     if user_comment_parts:
         lines = [f"{k.replace('_', ' ').title()}: {v}" for k, v in user_comment_parts.items()]

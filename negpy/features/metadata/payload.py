@@ -6,7 +6,14 @@ import math
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from negpy.features.metadata.capture import CaptureDate, format_coords, parse_capture_date, place_summary
+from negpy.features.metadata.capture import (
+    CaptureDate,
+    format_coords,
+    format_dev_time,
+    format_temperature,
+    parse_capture_date,
+    place_summary,
+)
 from negpy.features.metadata.exif_read import ScanExif, extract_scan_from_exif
 from negpy.features.metadata.gear_models import GearLibrary
 from negpy.features.metadata.models import (
@@ -111,9 +118,16 @@ class MetadataPayload:
 
     image_description: str = ""
     developer: str = ""
+    dilution: str = ""
     push_pull: str = ""
+    development_time: str = ""
+    development_temperature: str = ""
     notes: str = ""
     exif_flags: ExifWriteFlags = ExifWriteFlags()
+
+    def developer_display(self) -> str:
+        """Developer at its working strength, the way a note would read it."""
+        return " ".join(p for p in (self.developer, self.dilution) if p)
 
     def camera_display(self) -> str:
         return f"{self.camera_make} {self.camera_model}".strip()
@@ -211,9 +225,15 @@ class MetadataPayload:
         if self.film_format and not capture:
             process.append(("Format", self.film_format))
         if self.developer:
-            process.append(("Developer", self.developer))
+            process.append(("Developer", self.developer_display()))
+        if self.dilution:
+            process.append(("Dilution", self.dilution))
         if self.push_pull and self.push_pull != "Normal":
             process.append(("Push / pull", self.push_pull))
+        if self.development_time:
+            process.append(("Development time", self.development_time))
+        if self.development_temperature:
+            process.append(("Temperature", self.development_temperature))
         if process:
             sections.append(("Process", process))
 
@@ -263,7 +283,7 @@ def build_image_description(payload: MetadataPayload, fields: object = None) -> 
     if "format" in enabled and payload.film_format:
         parts.append(payload.film_format)
     if "developer" in enabled and payload.developer:
-        parts.append(payload.developer)
+        parts.append(payload.developer_display())
     if "push_pull" in enabled and payload.push_pull and payload.push_pull != "Normal":
         parts.append(payload.push_pull)
     if "scanning" in enabled and payload.scan_method:
@@ -365,7 +385,12 @@ def build_metadata_payload(
         scan_gps_latitude=scan.gps_latitude,
         scan_gps_longitude=scan.gps_longitude,
         developer=config.developer.strip(),
+        dilution=config.process_dilution.strip(),
         push_pull=push_pull,
+        development_time=format_dev_time(config.process_time_seconds),
+        development_temperature=(
+            f"{format_temperature(config.process_temperature_c)} °C" if config.process_temperature_c is not None else ""
+        ),
     )
 
     desc_fields = resolve_description_fields(config.description_fields)
@@ -410,6 +435,9 @@ def build_metadata_payload(
         scan_gps_longitude=draft.scan_gps_longitude,
         image_description=desc,
         developer=draft.developer,
+        dilution=draft.dilution,
         push_pull=draft.push_pull,
+        development_time=draft.development_time,
+        development_temperature=draft.development_temperature,
         exif_flags=exif_flags,
     )

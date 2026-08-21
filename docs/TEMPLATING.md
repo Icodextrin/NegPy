@@ -32,8 +32,11 @@ NegPy uses **Jinja2** for dynamic file naming in both the **Export** and **Scan*
 | `{{ film_manufacturer }}` | Film manufacturer. | `Kodak` |
 | `{{ film_color_type }}` | Film color type. | `Color negative` |
 | `{{ film_format }}` | Film format (35mm, 120, …). Distinct from export `{{ format }}`. | `35mm` |
-| `{{ developer }}` | Developer. | `D-76 1+1` |
+| `{{ developer }}` | Developer. | `D-76` |
+| `{{ dilution }}` | Developer dilution. | `1+1` |
 | `{{ push_pull }}` | Push/pull as an integer (−3…+3, 0 = Normal). | `1` |
+| `{{ development_time }}` | Development time, mm-ss (the colon is not filename-safe). | `9-30` |
+| `{{ development_temperature }}` | Development temperature in °C. | `20` |
 | `{{ scanning }}` | Scanning method note. | `DSLR copy-stand` |
 | `{{ exposure }}` | Exposure override text from Metadata. | `1/125s f/2.8` |
 | `{{ capture_date }}` | Original capture date in YYYYMMDD. A partial date pads to the first day. Empty if unset. | `19980714` |

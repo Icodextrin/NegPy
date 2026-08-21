@@ -9,9 +9,9 @@ import piexif
 import pytest
 
 
-from negpy.features.metadata.gear_models import Camera, FilmStock, GearLibrary, GearPreset, Lens
+from negpy.features.metadata.gear_models import Camera, FilmStock, GearLibrary, Lens
 
-from negpy.features.metadata.gear_logic import metadata_from_gear, matches_gear_filter, gear_search_text
+from negpy.features.metadata.gear_logic import metadata_from_gear, matches_gear_filter
 
 from negpy.features.metadata.models import MetadataConfig
 
@@ -109,7 +109,6 @@ def test_load_and_save_library(gear_dir):
         cameras=[Camera(id="c1", make="Canon", model="AE-1")],
         lenses=[Lens(id="l1", lens_model="50mm", make="Canon")],
         film_stocks=[FilmStock(id="f1", manufacturer="Kodak", stock_name="Portra 400", iso=400)],
-        gear_presets=[GearPreset(id="p1", display_name="Test", camera_id="c1", lens_id="l1", film_stock_id="f1")],
     )
 
     GearProfiles.save_library(library)
@@ -120,43 +119,16 @@ def test_load_and_save_library(gear_dir):
 
     assert loaded.cameras[0].make == "Canon"
 
-    assert loaded.gear_presets[0].display_name == "Test"
-
 
 def test_matches_gear_filter_substring_case_insensitive():
     camera = Camera(id="c1", make="Nikon", model="FM2")
     lens = Lens(id="l1", lens_model="Nikkor 28mm f/2.8 AI-S", make="Nikkor", focal_length_mm=28)
     film = FilmStock(id="f1", manufacturer="Kodak", stock_name="Portra 400", iso=400)
-    library = GearLibrary(
-        cameras=[camera],
-        lenses=[lens],
-        film_stocks=[film],
-        gear_presets=[GearPreset(id="p1", display_name="Street combo", camera_id="c1", lens_id="l1", film_stock_id="f1")],
-    )
-
     assert matches_gear_filter(camera, "fm2")
     assert matches_gear_filter(lens, "28")
     assert matches_gear_filter(film, "portra")
-    assert matches_gear_filter(library.gear_presets[0], "street", library)
-    assert matches_gear_filter(library.gear_presets[0], "nikkor", library)
     assert not matches_gear_filter(camera, "canon")
     assert matches_gear_filter(camera, "")
-
-
-def test_gear_search_text_includes_preset_linked_labels():
-    library = GearLibrary(
-        cameras=[Camera(id="c1", make="Nikon", model="FM2")],
-        lenses=[Lens(id="l1", lens_model="Nikkor 50mm f/1.8 AI-S", make="Nikkor")],
-        film_stocks=[FilmStock(id="f1", manufacturer="Kodak", stock_name="Tri-X 400", iso=400)],
-        gear_presets=[GearPreset(id="p1", display_name="Daily carry", camera_id="c1", lens_id="l1", film_stock_id="f1")],
-    )
-    preset = library.gear_presets[0]
-
-    search_text = gear_search_text(preset, library)
-
-    assert "fm2" in search_text
-    assert "nikkor" in search_text
-    assert "tri-x" in search_text
 
 
 def test_searchable_gear_combo_empty_selection_shows_placeholder():
@@ -272,7 +244,6 @@ def test_metadata_from_gear_clearing_camera_id():
         cameras=[Camera(id="c1", make="Leica", model="M6")],
         lenses=[],
         film_stocks=[],
-        gear_presets=[],
     )
     base = MetadataConfig(camera_id="c1", camera_make="Leica", camera_model="M6")
 
@@ -283,87 +254,14 @@ def test_metadata_from_gear_clearing_camera_id():
     assert cleared.camera_model == ""
 
 
-def test_bundled_fm2_preset_links_nikkor_lens():
-    library = GearProfiles.load_library()
-    preset = library.get_gear_preset("preset-fm2-50-trix")
-    assert preset is not None
-    lens = library.get_lens(preset.lens_id)
-    assert lens is not None
-    assert "nikkor" in lens.resolved_display_name.casefold()
-    assert "leica" not in lens.resolved_display_name.casefold()
-
-
-def test_metadata_from_gear_preset_overrides_manual_lens():
-    library = GearLibrary(
-        cameras=[
-            Camera(id="c1", make="Canon", model="AE-1 Program"),
-            Camera(id="c2", make="Nikon", model="FM2"),
-        ],
-        lenses=[
-            Lens(id="l1", lens_model="FD 50mm f/1.4", make="Canon"),
-            Lens(id="l2", lens_model="Nikkor 50mm f/1.8 AI-S", make="Nikkor"),
-        ],
-        film_stocks=[
-            FilmStock(id="f1", manufacturer="Kodak", stock_name="Portra 400", iso=400),
-            FilmStock(id="f2", manufacturer="Kodak", stock_name="Tri-X 400", iso=400),
-        ],
-        gear_presets=[
-            GearPreset(
-                id="p1",
-                display_name="FM2 combo",
-                camera_id="c2",
-                lens_id="l2",
-                film_stock_id="f2",
-            ),
-        ],
-    )
-    manual = MetadataConfig(
-        camera_id="c1",
-        lens_id="l1",
-        film_stock_id="f1",
-        camera_make="Canon",
-        camera_model="AE-1 Program",
-        lens_model="FD 50mm f/1.4",
-        film="Kodak Portra 400",
-        film_iso=400,
-    )
-
-    applied = metadata_from_gear(manual, library, gear_preset_id="p1")
-
-    assert applied.gear_preset_id == "p1"
-    assert applied.camera_id == "c2"
-    assert applied.lens_id == "l2"
-    assert applied.film_stock_id == "f2"
-    assert applied.camera_model == "FM2"
-    assert applied.lens_model == "Nikkor 50mm f/1.8 AI-S"
-    assert applied.film == "Kodak Tri-X 400"
-
-
-def test_metadata_from_gear_preset_clears_empty_slots():
-    library = GearLibrary(
-        cameras=[Camera(id="c1", make="Canon", model="AE-1")],
-        lenses=[Lens(id="l1", lens_model="50mm", make="Canon")],
-        film_stocks=[FilmStock(id="f1", manufacturer="Kodak", stock_name="Portra 400", iso=400)],
-        gear_presets=[GearPreset(id="p1", display_name="Camera only", camera_id="c1")],
-    )
-    manual = MetadataConfig(camera_id="c1", lens_id="l1", film_stock_id="f1")
-
-    applied = metadata_from_gear(manual, library, gear_preset_id="p1")
-
-    assert applied.camera_id == "c1"
-    assert applied.lens_id == ""
-    assert applied.film_stock_id == ""
-
-
-def test_metadata_from_gear_preset():
+def test_metadata_from_gear_ids():
     library = GearLibrary(
         cameras=[Camera(id="c1", make="Canon", model="AE-1 Program")],
         lenses=[Lens(id="l1", lens_model="FD 50mm f/1.4", make="Canon", focal_length_mm=50, max_aperture=1.4)],
         film_stocks=[FilmStock(id="f1", manufacturer="Kodak", stock_name="Portra 400", iso=400)],
-        gear_presets=[GearPreset(id="p1", display_name="Combo", camera_id="c1", lens_id="l1", film_stock_id="f1")],
     )
 
-    config = metadata_from_gear(MetadataConfig(), library, gear_preset_id="p1")
+    config = metadata_from_gear(MetadataConfig(), library, camera_id="c1", lens_id="l1", film_stock_id="f1")
 
     assert config.camera_make == "Canon"
 
@@ -439,7 +337,6 @@ def test_build_metadata_payload_preview_pairs():
         cameras=[Camera(id="c1", make="Canon", model="AE-1")],
         lenses=[],
         film_stocks=[],
-        gear_presets=[],
     )
 
     config = MetadataConfig(camera_id="c1", developer="D-76 1+1")
@@ -516,7 +413,6 @@ def test_scan_rig_preserved_in_xmp_while_exif_shows_analog():
         cameras=[Camera(id="c1", make="Nikon", model="FM2")],
         lenses=[Lens(id="l1", lens_model="Nikkor 28mm f/2.8 AIS", make="Nikkor", focal_length_mm=28, max_aperture=2.8)],
         film_stocks=[],
-        gear_presets=[],
     )
 
     source_exif = {
@@ -589,7 +485,6 @@ def test_embed_jpeg_analog_exif_and_scan_xmp():
         cameras=[Camera(id="c1", make="Nikon", model="FM2")],
         lenses=[Lens(id="l1", lens_model="Nikkor 28mm f/2.8 AIS", make="Nikkor", focal_length_mm=28, max_aperture=2.8)],
         film_stocks=[FilmStock(id="f1", manufacturer="Kodak", stock_name="Portra 400", iso=400)],
-        gear_presets=[],
     )
 
     config = MetadataConfig(

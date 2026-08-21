@@ -123,7 +123,6 @@ class SearchableGearCombo(QWidget):
         items: Sequence,
         selected_id: str,
         label_fn: Callable,
-        library=None,
     ) -> None:
         """Replace list contents and selection from gear dataclasses."""
         from negpy.features.metadata.gear_logic import gear_search_text
@@ -131,7 +130,7 @@ class SearchableGearCombo(QWidget):
         entries: list[tuple[str, str, str]] = []
         for item in items:
             item_id = getattr(item, "id", "") or ""
-            entries.append((label_fn(item), item_id, gear_search_text(item, library)))
+            entries.append((label_fn(item), item_id, gear_search_text(item)))
         self._selected_id = selected_id or ""
         self._load_entries(entries)
 

@@ -75,8 +75,14 @@ def build_xmp_xml(payload: MetadataPayload, *, standalone: bool = True) -> str:
         _sub(desc, "negpy", "CaptureFilmColorType", payload.film_color_type)
     if payload.developer:
         _sub(desc, "negpy", "Developer", payload.developer)
+    if payload.dilution:
+        _sub(desc, "negpy", "DevelopmentDilution", payload.dilution)
     if payload.push_pull and payload.push_pull != "Normal":
         _sub(desc, "negpy", "PushPull", payload.push_pull)
+    if payload.development_time:
+        _sub(desc, "negpy", "DevelopmentTime", payload.development_time)
+    if payload.development_temperature:
+        _sub(desc, "negpy", "DevelopmentTemperature", payload.development_temperature)
     if payload.notes:
         _sub(desc, "negpy", "Notes", payload.notes)
     if payload.location_city:

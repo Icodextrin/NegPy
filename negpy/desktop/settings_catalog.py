@@ -15,7 +15,7 @@ from typing import Any, Callable, Iterable, Mapping, Optional
 
 from negpy.domain.models import WorkspaceConfig
 from negpy.features.metadata.capture import place_summary
-from negpy.features.metadata.models import PUSH_PULL_LABELS
+from negpy.features.metadata.models import GEAR_FIELDS, PROCESS_FIELDS, PUSH_PULL_LABELS, SCANNING_FIELDS
 from negpy.features.process.models import invalidate_local_bounds
 
 
@@ -72,6 +72,25 @@ def _format(row: SettingRow, values: tuple) -> str:
 
 def _row(label, section, *fields, channels="", fmt=None, sticky=False) -> SettingRow:
     return SettingRow(label, section, tuple(fields), channels, fmt, sticky)
+
+
+def _fmt_process(values: tuple) -> str:
+    developer, dilution, push_pull = values[0], values[1], values[2]
+    recipe = " ".join(p for p in (developer, dilution) if p)
+    push = PUSH_PULL_LABELS.get(push_pull, str(push_pull))
+    if not recipe:
+        return push if push_pull else "—"
+    return recipe if not push_pull else f"{recipe} · {push}"
+
+
+def _fmt_gear(values: tuple) -> str:
+    v = dict(zip(GEAR_FIELDS, values))
+    parts = [
+        " ".join(str(x) for x in (v["camera_make"], v["camera_model"]) if x),
+        " ".join(str(x) for x in (v["lens_make"], v["lens_model"]) if x),
+        str(v["film"] or ""),
+    ]
+    return " · ".join(p for p in parts if p) or "—"
 
 
 # fmt: off
@@ -207,14 +226,7 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
         _row("IR Attenuation", "retouch", "ir_attenuation"),
     )),
     ("Metadata", (
-        _row("Camera", "metadata", "camera_make", "camera_model", fmt=lambda v: " ".join(str(x) for x in v if x) or "—"),
-        _row("Lens", "metadata", "lens_make", "lens_model", fmt=lambda v: " ".join(str(x) for x in v if x) or "—"),
-        _row("Focal Length", "metadata", "focal_length_mm"),
-        _row("Max Aperture", "metadata", "max_aperture"),
-        _row("Film", "metadata", "film"),
-        _row("Film ISO", "metadata", "film_iso"),
-        _row("Film Manufacturer", "metadata", "film_manufacturer"),
-        _row("Film Color Type", "metadata", "film_color_type"),
+        _row("Gear", "metadata", *GEAR_FIELDS, fmt=_fmt_gear),
         _row("Format", "metadata", "format", "format_other", fmt=lambda v: (v[1] if v[0] == "Other" and v[1] else v[0]) or "—"),
         _row("Capture Date", "metadata", "capture_date"),
         _row(
@@ -227,10 +239,12 @@ CATALOG: list[tuple[str, tuple[SettingRow, ...]]] = [
             "gps_longitude",
             fmt=lambda v: place_summary(v[0], v[1], v[2], v[3], v[4]) or "—",
         ),
-        _row("Developer", "metadata", "developer"),
-        _row("Push/Pull", "metadata", "push_pull", fmt=lambda v: PUSH_PULL_LABELS.get(v[0], str(v[0]))),
-        _row("Scanning", "metadata", "scanning"),
+        _row("Process", "metadata", *PROCESS_FIELDS, fmt=_fmt_process),
+        _row("Scanning", "metadata", *SCANNING_FIELDS, fmt=lambda v: _fmt_scalar(v[0])),
+        # capture_frame is deliberately absent: a frame number is unique to one frame.
+        _row("Roll", "metadata", "capture_roll"),
         _row("Exposure Override", "metadata", "exposure_override"),
+        _row("Sync To Batch", "metadata", "sync_to_batch"),
         _row("Protect Original Metadata", "metadata", "protect_original_metadata", sticky=True),
         _row(
             "Description Fields",
@@ -299,6 +313,9 @@ def rows_by_id() -> dict[str, SettingRow]:
     return {r.id: r for r in all_rows()}
 
 
+# Everything but the Metadata rows, for the pickers that offer metadata alone.
+NON_METADATA_SECTIONS: frozenset[str] = frozenset(title for title, _rows in CATALOG) - {"Metadata"}
+
 # What carries onto a fresh file out of the box. The user's own choice overrides it.
 DEFAULT_STICKY_IDS: frozenset[str] = frozenset(r.id for r in all_rows() if r.sticky)
 
@@ -351,6 +368,26 @@ def selected_flat_dict(cfg: WorkspaceConfig, rows: Iterable[SettingRow]) -> dict
     """Flat dict of the chosen rows' fields (flat keys are field names). A row's
     fields travel as a unit, default-valued ones included."""
     return {f: getattr(getattr(cfg, r.section), f) for r in rows for f in r.fields}
+
+
+def preset_config(data: Mapping[str, Any]) -> WorkspaceConfig:
+    """A preset's stored fields over defaults, so pickers show the preset's own
+    values rather than the current image's."""
+    base = WorkspaceConfig().to_dict()
+    base.update(data)
+    return WorkspaceConfig.from_flat_dict(base)
+
+
+def rows_for_keys(data: Mapping[str, Any], section: str = "") -> list[SettingRow]:
+    """The rows a preset stores, optionally narrowed to one config section."""
+    return [r for r in all_rows() if (not section or r.section == section) and any(f in data for f in r.fields)]
+
+
+def preset_values(data: Mapping[str, Any], section: str = "") -> list[tuple[str, str]]:
+    """Each row a preset stores, as (label, formatted value)."""
+    cfg = preset_config(data)
+    rows = rows_for_keys(data, section)
+    return [(r.label, _format(r, tuple(getattr(getattr(cfg, r.section), f) for f in r.fields))) for r in rows]
 
 
 def preset_summary(data: Mapping[str, Any]) -> str:
