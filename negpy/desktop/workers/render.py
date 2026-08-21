@@ -465,6 +465,69 @@ _HASH_WORKERS = min(8, APP_CONFIG.max_workers)
 _DECODE_WORKERS = max(1, APP_CONFIG.max_workers // 2)
 
 
+def rgb_grouping_notice(made: int, loose: int, incomplete: int, mismatched: int, by_time: bool) -> str:
+    """What RGB Scan did with a folder, when the answer is not "all of it".
+
+    Names the reason, because the two failures call for different things: sets that
+    are not one of each color mean the folder does not hold whole triplets, while
+    sets that do not match mean the shots could not be put in the order they were
+    taken. Silent on a clean folder — a status line nobody needs is noise.
+    """
+    if not loose:
+        return ""
+    from negpy.kernel.system.text import count_of
+
+    reasons = []
+    if incomplete:
+        reasons.append(f"{count_of(incomplete, 'set')} not one of each color")
+    if mismatched:
+        reasons.append(f"{count_of(mismatched, 'set')} showing different frames")
+    detail = f" — {', '.join(reasons)}" if reasons else ""
+    order = "" if by_time else "; grouped by filename, as the files state no capture time"
+    made_text = f"{count_of(made, 'frame')} assembled, " if made else ""
+    return (
+        f"RGB Scan: {made_text}{count_of(loose, 'file')} left separate{detail}{order}. "
+        "Right-click a frame and choose Edit RGB Triplet to pair them by hand."
+    )
+
+
+def rgb_nothing_matched_message(summary: dict) -> tuple[str, str]:
+    """Title and body for a folder where RGB Scan assembled nothing at all.
+
+    Two situations, opposite answers. A folder lit one color at a time is trichrome
+    that could not be ordered, and the user needs the requirements. A folder lit the
+    same way throughout is not trichrome at all, and the user needs the mode off.
+    """
+    from negpy.kernel.system.text import count_of
+
+    files = count_of(summary.get("loose", 0), "file")
+    if not summary.get("narrowband"):
+        return (
+            "Nothing to assemble",
+            f"RGB Scan is on, but this folder does not look like trichrome captures: its {files} were all "
+            "lit the same way, so there are no red, green and blue sets to combine.\n\n"
+            "Turn RGB Scan off to work with them as ordinary frames.",
+        )
+    # Filenames only stop mattering once the files date themselves; without that they
+    # carry the capture order and the claim would contradict the fallback.
+    if summary.get("by_time"):
+        naming = "Which of the three colors you shoot first does not matter, and filenames do not matter."
+    else:
+        naming = (
+            "Which of the three colors you shoot first does not matter. These files record no capture "
+            "time, so they were put in filename order — which means their names have to sort into the "
+            "order the shots were taken."
+        )
+    return (
+        "No triplets found",
+        f"None of the {files} in this folder could be assembled into RGB triplets.\n\n"
+        "Each frame needs three captures — one under red light, one under green, one under blue — "
+        "taken back to back before you move on to the next frame, and the folder should hold "
+        f"nothing else. {naming}\n\n"
+        "You can also pair files by hand: right-click a frame and choose Edit RGB Triplet.",
+    )
+
+
 def _without_parts(assets: list, parts: set) -> list:
     """Drop the files a re-attached composite is built from. A folder walk finds them
     beside the primary, and they belong to the composite, not to the roll."""
@@ -479,6 +542,7 @@ class AssetDiscoveryWorker(QObject):
     progress = pyqtSignal(int, int, str)
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
+    rgb_grouped = pyqtSignal(dict)  # RGB-scan grouping outcome; the controller decides how loudly to say it
 
     def _map_files(
         self,
@@ -712,21 +776,44 @@ class AssetDiscoveryWorker(QObject):
 
     def _group_rgb_triplets(self, assets: list) -> list:
         """Classify each file by dominant channel and merge consecutive R/G/B triplets
-        into one asset (red is primary; green/blue ride along). Unmatched files stay individual."""
+        into one asset (red is primary; green/blue ride along). A chunk that does not
+        hold one of each channel, or whose three exposures do not show the same frame,
+        is left alone: its files stay individual and can be paired by hand."""
         import os
 
-        from negpy.features.rgbscan.logic import classify_channel, group_triplets, probe_channel_means
+        from negpy.features.rgbscan.logic import (
+            capture_ordered,
+            capture_timestamp,
+            classify_channel,
+            group_triplets,
+            looks_narrowband,
+            probe_frame,
+        )
 
         by_path = {a["path"]: a for a in assets}
         ordered = sorted(by_path, key=lambda p: os.path.basename(p).lower())
 
-        means = self._map_files(ordered, probe_channel_means, lambda p: f"RGB {os.path.basename(p)}", _DECODE_WORKERS)
-        items = [(p, classify_channel(m)) for p, m in zip(ordered, means) if m is not None]
+        stamps = self._map_files(ordered, capture_timestamp, lambda p: f"Time {os.path.basename(p)}", _HASH_WORKERS)
+        times = {p: t for p, t in zip(ordered, stamps) if t}
+        by_time = len(times) == len(ordered)
+        ordered = capture_ordered(ordered, times)
+
+        probes = self._map_files(ordered, probe_frame, lambda p: f"RGB {os.path.basename(p)}", _DECODE_WORKERS)
+        items = [(p, classify_channel(pr.means)) for p, pr in zip(ordered, probes) if pr is not None]
+        signatures = {p: pr.signature for p, pr in zip(ordered, probes) if pr is not None}
 
         result = []
         grouped = set()
-        for t in group_triplets(items):
+        incomplete = mismatched = 0
+        for t in group_triplets(items, signatures):
             if not t.ok:
+                # Which test it failed separates "this folder does not hold whole
+                # triplets" from "these could not be put into the order they were shot".
+                chunk = [(p, ch) for p, ch in items if p in (t.red, t.green, t.blue)]
+                if group_triplets(chunk)[0].ok:
+                    mismatched += 1
+                else:
+                    incomplete += 1
                 continue
             red = by_path[t.red]
             base = os.path.splitext(red["name"])[0]
@@ -734,6 +821,18 @@ class AssetDiscoveryWorker(QObject):
             grouped.update({t.red, t.green, t.blue})
 
         result.extend(by_path[p] for p in ordered if p not in grouped)
+        loose = len(ordered) - len(grouped)
+        if loose:
+            summary = {
+                "made": len(grouped) // 3,
+                "loose": loose,
+                "incomplete": incomplete,
+                "mismatched": mismatched,
+                "by_time": by_time,
+                "narrowband": looks_narrowband([pr.means for pr in probes if pr is not None]),
+            }
+            logger.warning("RGB scan: %s", summary)
+            self.rgb_grouped.emit(summary)
         return result
 
 
