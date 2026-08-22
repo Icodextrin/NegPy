@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+FORMAT_OPTIONS: tuple[str, ...] = ("35mm", "120", "4×5", "8×10", "110", "Other")
+
 # Panel order: strongest push first.
 PUSH_PULL_VALUES: tuple[int, ...] = (3, 2, 1, 0, -1, -2, -3)
 

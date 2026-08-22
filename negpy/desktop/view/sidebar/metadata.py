@@ -46,6 +46,7 @@ from negpy.features.metadata.gear_logic import metadata_from_gear, metadata_from
 from negpy.features.metadata.gear_models import GearLibrary
 from negpy.features.metadata.models import (
     DEFAULT_DESCRIPTION_FIELDS,
+    FORMAT_OPTIONS,
     PROCESS_FIELDS,
     PUSH_PULL_LABELS,
     PUSH_PULL_VALUES,
@@ -56,7 +57,6 @@ from negpy.features.metadata.payload import build_metadata_payload
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.presets import MetadataPresets
 
-FORMAT_OPTIONS = ["35mm", "120", "4×5", "8×10", "110", "Other"]
 PUSH_PULL_OPTIONS = [PUSH_PULL_LABELS[v] for v in PUSH_PULL_VALUES]
 _LOAD_TOOLTIP = "Write the selected preset's fields onto this frame"
 _CLEAR_TOOLTIPS = {

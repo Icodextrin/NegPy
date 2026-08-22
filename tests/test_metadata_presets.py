@@ -21,7 +21,7 @@ from negpy.desktop.view.sidebar.metadata import MetadataSidebar
 from negpy.desktop.view.widgets.gear_library_dialog import GearLibraryDialog
 from negpy.desktop.view.widgets.granular_settings_dialog import GranularSettingsDialog
 from negpy.domain.models import WorkspaceConfig
-from negpy.features.metadata.gear_models import Camera, DevelopmentProcess, FilmStock, GearLibrary, ScanSetup
+from negpy.features.metadata.gear_models import Camera, DevelopmentProcess, FilmFormat, FilmStock, GearLibrary, ScanSetup
 from negpy.desktop.view.shortcut_registry import REGISTRY
 from negpy.features.metadata.capture import parse_dev_time, parse_temperature
 from negpy.features.metadata.models import GEAR_FIELDS, MetadataConfig
@@ -200,20 +200,20 @@ def test_manage_edit_renames_and_keeps_values() -> None:
     }
 
 
-def test_manage_lists_presets_and_summarizes_the_selected_one() -> None:
+def test_manage_lists_presets_and_shows_the_selected_one() -> None:
     MetadataPresets.save_preset("HP5", {"developer": "D-76 1+1", "push_pull": 1, "scanning": "DSLR copy-stand"})
     library = GearLibraryDialog(GearLibrary())
     library._select_category("metadata_presets")
 
     assert [library.item_list.item(i).text() for i in range(library.item_list.count())] == ["HP5"]
     assert library.preset_name_label.text() == "HP5"
-    shown = {
-        library.preset_fields_layout.itemAt(i, library.preset_fields_layout.ItemRole.LabelRole).widget().text(): (
-            library.preset_fields_layout.itemAt(i, library.preset_fields_layout.ItemRole.FieldRole).widget().text()
-        )
-        for i in range(library.preset_fields_layout.rowCount())
-    }
-    assert shown == {"Process": "D-76 1+1 · Push +1", "Scanning": "DSLR copy-stand"}
+    # Stored rows with an editor are shown as fields, filled with the preset's own values.
+    assert library.preset_developer_edit.text() == "D-76 1+1"
+    assert library.preset_developer_edit.isVisibleTo(library.preset_panel)
+    assert library.preset_scanning_edit.text() == "DSLR copy-stand"
+    assert library.preset_push_combo.currentText() == "Push +1"
+    # Rows it does not store stay hidden.
+    assert not library.preset_roll_edit.isVisibleTo(library.preset_panel)
     assert library.form_panel.isVisible() is False
 
 
@@ -786,3 +786,114 @@ class TestPresetNames:
         sidebar.apply_shortcut_tooltips()
 
         assert "Ctrl+Shift+L" in sidebar.metadata_preset_load_btn.toolTip()
+
+
+class TestEditingPresetValuesInTheLibrary:
+    """Swapping a camera or a developer without opening a frame."""
+
+    @pytest.fixture
+    def dialog(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        library = GearLibrary(
+            cameras=[Camera(id="c1", make="Nikon", model="FM2"), Camera(id="c2", make="Canon", model="AE-1")],
+            film_stocks=[FilmStock(id="f1", manufacturer="Ilford", stock_name="HP5+", iso=400, format=FilmFormat.FORMAT_120)],
+            processes=[DevelopmentProcess(id="p1", display_name="HC-110 B", developer="HC-110", dilution="1+31", time_seconds=390)],
+        )
+        dlg = GearLibraryDialog(library)
+        return dlg, library
+
+    def _select(self, dlg, name):
+        dlg._select_category("metadata_presets")
+        dlg.item_list.setCurrentRow([dlg._item_label(i) for i in dlg._list_items].index(name))
+
+    def test_swapping_the_camera_rewrites_the_resolved_values(self, dialog):
+        dlg, _library = dialog
+        MetadataPresets.save_preset("Kit", selected_flat_dict(WorkspaceConfig(), [r for r in _metadata_rows() if r.label == "Gear"]))
+        self._select(dlg, "Kit")
+
+        dlg.preset_camera_combo.set_selected_id("c2")
+        dlg._on_preset_gear_changed()
+
+        stored = MetadataPresets.load_preset("Kit")
+        assert stored["camera_id"] == "c2"
+        assert stored["camera_make"] == "Canon"
+        assert stored["camera_model"] == "AE-1"
+
+    def test_picking_a_film_stock_carries_its_format(self, dialog):
+        dlg, _library = dialog
+        MetadataPresets.save_preset("Kit", selected_flat_dict(WorkspaceConfig(), [r for r in _metadata_rows() if r.label == "Gear"]))
+        self._select(dlg, "Kit")
+
+        dlg.preset_film_combo.set_selected_id("f1")
+        dlg._on_preset_gear_changed()
+
+        stored = MetadataPresets.load_preset("Kit")
+        assert stored["film"] == "Ilford HP5+"
+        assert stored["film_iso"] == 400
+        assert stored["format"] == "120"
+
+    def test_picking_a_saved_process_fills_the_recipe(self, dialog):
+        dlg, _library = dialog
+        MetadataPresets.save_preset("Dev", selected_flat_dict(WorkspaceConfig(), [r for r in _metadata_rows() if r.label == "Process"]))
+        self._select(dlg, "Dev")
+
+        dlg.preset_process_combo.set_selected_id("p1")
+        dlg._on_preset_process_picked()
+
+        stored = MetadataPresets.load_preset("Dev")
+        assert (stored["developer"], stored["process_dilution"]) == ("HC-110", "1+31")
+        assert stored["process_time_seconds"] == 390
+        assert stored["process_id"] == "p1"
+
+    def test_typing_a_developer_unlinks_the_saved_process(self, dialog):
+        dlg, _library = dialog
+        MetadataPresets.save_preset(
+            "Dev",
+            {
+                "developer": "HC-110",
+                "process_dilution": "1+31",
+                "push_pull": 0,
+                "process_time_seconds": 390,
+                "process_temperature_c": None,
+                "process_id": "p1",
+            },
+        )
+        self._select(dlg, "Dev")
+
+        dlg.preset_developer_edit.setText("Rodinal")
+
+        stored = MetadataPresets.load_preset("Dev")
+        assert stored["developer"] == "Rodinal"
+        assert stored["process_id"] == ""
+
+    def test_editing_never_adds_a_row_the_preset_does_not_store(self, dialog):
+        dlg, _library = dialog
+        MetadataPresets.save_preset("Dev", {"developer": "HC-110", "push_pull": 0, "process_id": ""})
+        self._select(dlg, "Dev")
+
+        dlg.preset_developer_edit.setText("Rodinal")
+
+        stored = MetadataPresets.load_preset("Dev")
+        assert stored["developer"] == "Rodinal"
+        assert "camera_id" not in stored
+        assert "scanning" not in stored
+
+    def test_a_half_typed_time_does_not_erase_the_stored_one(self, dialog):
+        dlg, _library = dialog
+        MetadataPresets.save_preset(
+            "Dev",
+            {
+                "developer": "HC-110",
+                "process_dilution": "",
+                "push_pull": 0,
+                "process_time_seconds": 390,
+                "process_temperature_c": None,
+                "process_id": "",
+            },
+        )
+        self._select(dlg, "Dev")
+
+        dlg.preset_time_edit.setText("6:")
+
+        assert MetadataPresets.load_preset("Dev")["process_time_seconds"] == 390
+        assert dlg.preset_time_edit.styleSheet() != ""

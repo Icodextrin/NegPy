@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import qtawesome as qta
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
@@ -21,11 +23,23 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from negpy.desktop.settings_catalog import NON_METADATA_SECTIONS, preset_config, preset_values, rows_for_keys, selected_flat_dict
+from negpy.desktop.settings_catalog import (
+    NON_METADATA_SECTIONS,
+    preset_config,
+    preset_values,
+    rows_by_id,
+    rows_for_keys,
+    selected_flat_dict,
+)
 from negpy.desktop.view.styles.templates import dialog_pane_qss, field_label, hint_label, pane_header_qss
 from negpy.desktop.view.styles.theme import THEME
 from negpy.desktop.view.widgets.granular_settings_dialog import GranularSettingsDialog
-from negpy.features.metadata.gear_logic import matches_gear_filter
+from negpy.features.metadata.gear_logic import (
+    matches_gear_filter,
+    metadata_from_gear,
+    metadata_from_process,
+    metadata_from_scan_setup,
+)
 from negpy.features.metadata.capture import DEV_TIME_HINT, format_dev_time, format_temperature, parse_dev_time, parse_temperature
 from negpy.features.metadata.gear_models import (
     Camera,
@@ -37,9 +51,10 @@ from negpy.features.metadata.gear_models import (
     Lens,
     ScanSetup,
 )
-from negpy.features.metadata.models import PUSH_PULL_LABELS, PUSH_PULL_VALUES
+from negpy.features.metadata.models import FORMAT_OPTIONS, PUSH_PULL_LABELS, PUSH_PULL_VALUES
+from negpy.desktop.view.widgets.searchable_gear_combo import SearchableGearCombo
 from negpy.services.assets.gear import GearProfiles
-from negpy.services.assets.presets import MetadataPresets, is_valid_preset_name, preset_notes, with_preset_notes
+from negpy.services.assets.presets import MetadataPresets, is_valid_preset_name, preset_fields, preset_notes, with_preset_notes
 
 _CATEGORIES = [
     ("cameras", "Cameras"),
@@ -70,6 +85,15 @@ _CATEGORY_SEARCH_PLACEHOLDER = {
     "processes": "Search processes…",
     "scan_setups": "Search scan setups…",
     _PRESETS: "Search presets…",
+}
+
+
+_PRESET_ROW_WIDGETS: dict[str, tuple[str, ...]] = {
+    "metadata.camera_id": ("camera", "lens", "film_stock", "format", "format_other"),
+    "metadata.developer": ("process", "developer", "dilution", "push_pull", "dev_time", "dev_temp"),
+    "metadata.scanning": ("scan_setup", "scanning"),
+    "metadata.capture_roll": ("roll",),
+    "metadata.exposure_override": ("exposure",),
 }
 
 
@@ -258,11 +282,16 @@ class GearLibraryDialog(QDialog):
         preset_layout.setSpacing(8)
         self.preset_name_label = QLabel()
         self.preset_name_label.setStyleSheet(f"color: {THEME.text_primary}; font-weight: bold;")
+        self.preset_form_layout = QFormLayout()
+        self.preset_form_layout.setSpacing(8)
+        self._preset_rows: dict[str, tuple[QLabel, QWidget]] = {}
+        self._build_preset_form()
         self.preset_fields_layout = QFormLayout()
         self.preset_fields_layout.setSpacing(8)
         self.preset_empty_label = QLabel("This preset stores nothing.")
         self.preset_empty_label.setStyleSheet(f"color: {THEME.text_secondary};")
         preset_layout.addWidget(self.preset_name_label)
+        preset_layout.addLayout(self.preset_form_layout)
         preset_layout.addLayout(self.preset_fields_layout)
         preset_layout.addWidget(self.preset_empty_label)
         notes_row = QFormLayout()
@@ -272,7 +301,7 @@ class GearLibraryDialog(QDialog):
         self.preset_notes_edit.textChanged.connect(self._on_preset_notes_changed)
         notes_row.addRow(field_label("Notes"), self.preset_notes_edit)
         preset_layout.addLayout(notes_row)
-        preset_layout.addWidget(hint_label("Edit a stored value in the Metadata panel, then save over the preset."))
+        preset_layout.addWidget(hint_label("The pen chooses which fields a preset stores; these edit their values."))
         self.preset_panel.setVisible(False)
         right_layout.addWidget(self.preset_panel)
         right_layout.addStretch()
@@ -285,6 +314,78 @@ class GearLibraryDialog(QDialog):
         right_layout.addLayout(close_row)
 
         root.addWidget(right)
+
+    def _build_preset_form(self) -> None:
+        self.preset_camera_combo = SearchableGearCombo(placeholder="Search cameras…")
+        self.preset_lens_combo = SearchableGearCombo(placeholder="Search lenses…")
+        self.preset_film_combo = SearchableGearCombo(placeholder="Search film stocks…")
+        self.preset_process_combo = SearchableGearCombo(placeholder="Search processes…")
+        self.preset_scan_combo = SearchableGearCombo(placeholder="Search scan setups…")
+        self.preset_format_combo = QComboBox()
+        self.preset_format_combo.addItems(FORMAT_OPTIONS)
+        self.preset_format_other_edit = QLineEdit()
+        self.preset_format_other_edit.setPlaceholderText("e.g. 6×7")
+        self.preset_developer_edit = QLineEdit()
+        self.preset_developer_edit.setPlaceholderText("e.g. D-76")
+        self.preset_dilution_edit = QLineEdit()
+        self.preset_dilution_edit.setPlaceholderText("e.g. 1+50")
+        self.preset_push_combo = QComboBox()
+        self.preset_push_combo.addItems([PUSH_PULL_LABELS[v] for v in PUSH_PULL_VALUES])
+        self.preset_time_edit = QLineEdit()
+        self.preset_time_edit.setPlaceholderText(DEV_TIME_HINT)
+        self.preset_temp_edit = QLineEdit()
+        self.preset_temp_edit.setPlaceholderText("e.g. 20")
+        self.preset_scanning_edit = QLineEdit()
+        self.preset_scanning_edit.setPlaceholderText("e.g. DSLR copy-stand scan")
+        self.preset_roll_edit = QLineEdit()
+        self.preset_roll_edit.setPlaceholderText("e.g. Roll001")
+        self.preset_exposure_edit = QLineEdit()
+        self.preset_exposure_edit.setPlaceholderText("e.g. 1/125s f/2.8 ISO 400")
+
+        for key, label, widget in (
+            ("camera", "Camera", self.preset_camera_combo),
+            ("lens", "Lens", self.preset_lens_combo),
+            ("film_stock", "Film stock", self.preset_film_combo),
+            ("format", "Format", self.preset_format_combo),
+            ("format_other", "Other format", self.preset_format_other_edit),
+            ("process", "Saved process", self.preset_process_combo),
+            ("developer", "Developer", self.preset_developer_edit),
+            ("dilution", "Dilution", self.preset_dilution_edit),
+            ("push_pull", "Push / Pull", self.preset_push_combo),
+            ("dev_time", "Time", self.preset_time_edit),
+            ("dev_temp", "Temperature (°C)", self.preset_temp_edit),
+            ("scan_setup", "Saved setup", self.preset_scan_combo),
+            ("scanning", "Scanning", self.preset_scanning_edit),
+            ("roll", "Roll", self.preset_roll_edit),
+            ("exposure", "Exposure", self.preset_exposure_edit),
+        ):
+            row_label = field_label(label)
+            self.preset_form_layout.addRow(row_label, widget)
+            self._preset_rows[key] = (row_label, widget)
+
+        # A library pick re-resolves everything read from it; a typed value unlinks the pick,
+        # exactly as the Metadata panel behaves.
+        for combo, handler in (
+            (self.preset_camera_combo, self._on_preset_gear_changed),
+            (self.preset_lens_combo, self._on_preset_gear_changed),
+            (self.preset_film_combo, self._on_preset_gear_changed),
+            (self.preset_process_combo, self._on_preset_process_picked),
+            (self.preset_scan_combo, self._on_preset_scan_picked),
+        ):
+            combo.selection_changed.connect(handler)
+        for edit in (
+            self.preset_format_other_edit,
+            self.preset_developer_edit,
+            self.preset_dilution_edit,
+            self.preset_time_edit,
+            self.preset_temp_edit,
+            self.preset_scanning_edit,
+            self.preset_roll_edit,
+            self.preset_exposure_edit,
+        ):
+            edit.textChanged.connect(self._on_preset_value_changed)
+        self.preset_format_combo.currentIndexChanged.connect(self._on_preset_value_changed)
+        self.preset_push_combo.currentIndexChanged.connect(self._on_preset_value_changed)
 
     def _register_form_row(self, key: str, label_text: str, widget: QWidget) -> None:
         label = field_label(label_text)
@@ -475,22 +576,149 @@ class GearLibraryDialog(QDialog):
             self._updating = False
 
     def _populate_preset(self, name: str) -> None:
-        while self.preset_fields_layout.rowCount():
-            self.preset_fields_layout.removeRow(0)
         data = MetadataPresets.load_preset(name) or {}
-        values = preset_values(data, "metadata")
-        self.preset_name_label.setText(name)
+        stored = {r.id for r in rows_for_keys(data, "metadata")}
+        editable = {w for row_id in stored for w in _PRESET_ROW_WIDGETS.get(row_id, ())}
+        meta = preset_config(data).metadata
+
         self._updating = True
         try:
+            self.preset_name_label.setText(name)
             self.preset_notes_edit.setText(preset_notes(data))
+            self.preset_camera_combo.set_gear_items(self._library.cameras, meta.camera_id, lambda c: c.resolved_display_name)
+            self.preset_lens_combo.set_gear_items(self._library.lenses, meta.lens_id, lambda x: x.resolved_display_name)
+            self.preset_film_combo.set_gear_items(self._library.film_stocks, meta.film_stock_id, lambda f: f.resolved_display_name)
+            self.preset_process_combo.set_gear_items(self._library.processes, meta.process_id, lambda p: p.resolved_display_name)
+            self.preset_scan_combo.set_gear_items(self._library.scan_setups, meta.scanning_id, lambda x: x.resolved_display_name)
+            self.preset_format_combo.setCurrentText(meta.format if meta.format in FORMAT_OPTIONS else "Other")
+            self.preset_format_other_edit.setText(meta.format_other)
+            self.preset_developer_edit.setText(meta.developer)
+            self.preset_dilution_edit.setText(meta.process_dilution)
+            self.preset_push_combo.setCurrentIndex(_push_pull_index(meta.push_pull))
+            self.preset_time_edit.setText(format_dev_time(meta.process_time_seconds))
+            self.preset_temp_edit.setText(format_temperature(meta.process_temperature_c))
+            self.preset_scanning_edit.setText(meta.scanning)
+            self.preset_roll_edit.setText(meta.capture_roll)
+            self.preset_exposure_edit.setText(meta.exposure_override)
+            for key, (row_label, widget) in self._preset_rows.items():
+                show = key in editable and (key != "format_other" or self.preset_format_combo.currentText() == "Other")
+                row_label.setVisible(show)
+                widget.setVisible(show)
+            self._mark_invalid(self.preset_time_edit, False)
+            self._mark_invalid(self.preset_temp_edit, False)
         finally:
             self._updating = False
-        for label, value in values:
+
+        # Rows with no editor: per-frame decisions, shown as they are stored.
+        while self.preset_fields_layout.rowCount():
+            self.preset_fields_layout.removeRow(0)
+        read_only = [(label, value) for label, value in preset_values(data, "metadata") if not self._is_editable_row(label, stored)]
+        for label, value in read_only:
             value_label = QLabel(value)
             value_label.setWordWrap(True)
             value_label.setStyleSheet(f"color: {THEME.text_secondary};")
             self.preset_fields_layout.addRow(field_label(label), value_label)
-        self.preset_empty_label.setVisible(not values)
+        self.preset_empty_label.setVisible(not stored)
+
+    def _is_editable_row(self, label: str, stored: set[str]) -> bool:
+        for row in rows_by_id().values():
+            if row.label == label and row.section == "metadata":
+                return row.id in _PRESET_ROW_WIDGETS and row.id in stored
+        return False
+
+    def _preset_field_update(self, data: dict, meta) -> dict:
+        """The stored rows' fields, re-read from one edited MetadataConfig."""
+        out = dict(data)
+        for row in rows_for_keys(data, "metadata"):
+            for f in row.fields:
+                out[f] = getattr(meta, f)
+        return out
+
+    def _write_preset(self, meta, refresh: bool = True) -> None:
+        """refresh redraws the form from what was stored, which a library pick needs (it
+        resolves other fields) and typing must not have — it would rewrite the text mid-edit."""
+        name = self._selected_preset()
+        data = MetadataPresets.load_preset(name) if name else None
+        if data is None:
+            return
+        fields = self._preset_field_update(preset_fields(data), meta)
+        MetadataPresets.save_preset(name, with_preset_notes(fields, preset_notes(data)))
+        self.presets_changed.emit()
+        if refresh:
+            self._populate_preset(name)
+
+    def _preset_meta(self):
+        name = self._selected_preset()
+        data = MetadataPresets.load_preset(name) if name else None
+        return preset_config(data).metadata if data else None
+
+    def _on_preset_gear_changed(self, *_args) -> None:
+        meta = None if self._updating else self._preset_meta()
+        if meta is None:
+            return
+        self._write_preset(
+            metadata_from_gear(
+                meta,
+                self._library,
+                camera_id=self.preset_camera_combo.selected_id(),
+                lens_id=self.preset_lens_combo.selected_id(),
+                film_stock_id=self.preset_film_combo.selected_id(),
+            )
+        )
+
+    def _on_preset_process_picked(self, *_args) -> None:
+        meta = None if self._updating else self._preset_meta()
+        if meta is not None:
+            self._write_preset(metadata_from_process(meta, self._library, self.preset_process_combo.selected_id()))
+
+    def _on_preset_scan_picked(self, *_args) -> None:
+        meta = None if self._updating else self._preset_meta()
+        if meta is not None:
+            self._write_preset(metadata_from_scan_setup(meta, self._library, self.preset_scan_combo.selected_id()))
+
+    def _on_preset_value_changed(self, *_args) -> None:
+        meta = None if self._updating else self._preset_meta()
+        if meta is None:
+            return
+        fmt = self.preset_format_combo.currentText()
+        if "format_other" in self._preset_rows and self._preset_rows["format"][1].isVisibleTo(self.preset_panel):
+            other_label, other_widget = self._preset_rows["format_other"]
+            other_label.setVisible(fmt == "Other")
+            other_widget.setVisible(fmt == "Other")
+        developer = self.preset_developer_edit.text().strip()
+        dilution = self.preset_dilution_edit.text().strip()
+        push = PUSH_PULL_VALUES[self.preset_push_combo.currentIndex()]
+        time_seconds = self._parsed_or_kept(self.preset_time_edit, parse_dev_time, meta.process_time_seconds)
+        temperature = self._parsed_or_kept(self.preset_temp_edit, parse_temperature, meta.process_temperature_c)
+        scanning = self.preset_scanning_edit.text().strip()
+        # A typed value unlinks the pick it came from, as it does on the panel.
+        process_id = meta.process_id
+        if (developer, dilution, push, time_seconds, temperature) != (
+            meta.developer,
+            meta.process_dilution,
+            meta.push_pull,
+            meta.process_time_seconds,
+            meta.process_temperature_c,
+        ):
+            process_id = ""
+        self._write_preset(
+            replace(
+                meta,
+                format=fmt,
+                format_other=self.preset_format_other_edit.text().strip() if fmt == "Other" else "",
+                developer=developer,
+                process_dilution=dilution,
+                push_pull=push,
+                process_time_seconds=time_seconds,
+                process_temperature_c=temperature,
+                process_id=process_id,
+                scanning=scanning,
+                scanning_id="" if scanning != meta.scanning else meta.scanning_id,
+                capture_roll=self.preset_roll_edit.text().strip(),
+                exposure_override=self.preset_exposure_edit.text().strip(),
+            ),
+            refresh=False,
+        )
 
     def _on_preset_notes_changed(self, text: str) -> None:
         name = self._selected_preset()
