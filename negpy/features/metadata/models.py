@@ -2,7 +2,20 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-FORMAT_OPTIONS: tuple[str, ...] = ("35mm", "120", "4×5", "8×10", "110", "Other")
+# "" is a format nobody set, and it is a row of its own: it is not "Other".
+FORMAT_UNSET = "—"
+FORMAT_OPTIONS: tuple[str, ...] = (FORMAT_UNSET, "35mm", "120", "4×5", "8×10", "110", "Other")
+
+
+def format_label(value: str) -> str:
+    """The dropdown row for a stored format."""
+    return value if value in FORMAT_OPTIONS else FORMAT_UNSET
+
+
+def format_value(label: str) -> str:
+    """The stored format for a dropdown row."""
+    return "" if label == FORMAT_UNSET else label
+
 
 # Panel order: strongest push first.
 PUSH_PULL_VALUES: tuple[int, ...] = (3, 2, 1, 0, -1, -2, -3)

@@ -225,7 +225,7 @@ class MetadataPayload:
         if self.film_format and not capture:
             process.append(("Format", self.film_format))
         if self.developer:
-            process.append(("Developer", self.developer_display()))
+            process.append(("Developer", self.developer))
         if self.dilution:
             process.append(("Dilution", self.dilution))
         if self.push_pull and self.push_pull != "Normal":

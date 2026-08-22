@@ -52,6 +52,8 @@ from negpy.features.metadata.models import (
     PUSH_PULL_VALUES,
     SCANNING_FIELDS,
     MetadataConfig,
+    format_label,
+    format_value,
 )
 from negpy.features.metadata.payload import build_metadata_payload
 from negpy.services.assets.gear import GearProfiles
@@ -190,8 +192,7 @@ class MetadataSidebar(BaseSidebar):
         proc.addWidget(field_label("Format"))
         self.format_combo = QComboBox()
         self.format_combo.addItems(FORMAT_OPTIONS)
-        if conf.format in FORMAT_OPTIONS:
-            self.format_combo.setCurrentText(conf.format)
+        self.format_combo.setCurrentText(format_label(conf.format))
         proc.addWidget(self.format_combo)
 
         self.format_other_edit = QLineEdit()
@@ -768,7 +769,7 @@ class MetadataSidebar(BaseSidebar):
             return
         self._dirty = False
 
-        fmt = self.format_combo.currentText()
+        fmt = format_value(self.format_combo.currentText())
         pp_idx = self.push_pull_combo.currentIndex()
 
         exposure_override = ""
@@ -824,12 +825,9 @@ class MetadataSidebar(BaseSidebar):
             self._set_metadata_controls_enabled(not conf.protect_original_metadata)
             self._refresh_gear_combos()
 
-            if conf.format in FORMAT_OPTIONS:
-                self.format_combo.setCurrentText(conf.format)
-            else:
-                self.format_combo.setCurrentText("Other")
-                self.format_other_edit.setText(conf.format_other)
-            self.format_other_edit.setVisible(self.format_combo.currentText() == "Other")
+            self.format_combo.setCurrentText(format_label(conf.format))
+            self.format_other_edit.setText(conf.format_other)
+            self.format_other_edit.setVisible(conf.format == "Other")
             self.capture_date_edit.setText(conf.capture_date)
             self.capture_date_edit.setStyleSheet("")
             self.place_edit.setText(self._place_text())
@@ -891,7 +889,7 @@ class MetadataSidebar(BaseSidebar):
     def _preview_metadata_config(self):
         """MetadataConfig from the live form so preview tracks edits before debounce persist."""
         conf = self.state.config.metadata
-        fmt = self.format_combo.currentText()
+        fmt = format_value(self.format_combo.currentText())
         pp_idx = self.push_pull_combo.currentIndex()
         exposure_override = ""
         if not self._exif_locked.get("exposure", True):

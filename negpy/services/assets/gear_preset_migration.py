@@ -9,14 +9,16 @@ copies.
 
 Best-effort and idempotent: guarded by a done flag, an existing preset of the
 same name is never overwritten, and nothing raises into app startup. The flag is
-written only when every source file was read, so a damaged file retries on the
-next launch instead of stranding its presets.
+written only when every source file was read and every preset was stored, so a
+damaged file or a refused write retries on the next launch instead of stranding
+the presets behind it.
 """
 
 from __future__ import annotations
 
 import json
 import os
+from itertools import count
 
 from negpy.features.metadata.gear_logic import metadata_from_gear
 from negpy.features.metadata.models import GEAR_FIELDS, MetadataConfig
@@ -24,14 +26,13 @@ from negpy.kernel.system.config import APP_CONFIG
 from negpy.kernel.system.logging import get_logger
 from negpy.kernel.system.paths import get_resource_path
 from negpy.services.assets.gear import GearProfiles
-from negpy.services.assets.presets import MetadataPresets, with_preset_notes
+from negpy.services.assets.presets import MetadataPresets, sanitize_preset_name, with_preset_notes
 
 logger = get_logger(__name__)
 
 _DONE_FLAG = "gear_presets_migrated"
 _GEAR_PRESETS_FILE = "gear_presets.json"
-# Windows and macOS both reject these in a filename, and a preset name is one.
-_UNSAFE_NAME_CHARS = '/\\:*?"<>|'
+_UNNAMED = "Unnamed preset"
 
 
 def _read_presets(path: str) -> tuple[bool, list[dict]]:
@@ -50,13 +51,23 @@ def _read_presets(path: str) -> tuple[bool, list[dict]]:
 
 
 def _safe_name(name: str) -> str:
-    return "".join(" " if c in _UNSAFE_NAME_CHARS else c for c in name).strip()
+    """A name the preset store accepts, with the gaps a stripped separator leaves
+    collapsed: "AE-1P / FD 50 f/1.4" names two things, not two blank fields."""
+    return " ".join(sanitize_preset_name(name).split())
+
+
+def _unique_name(base: str, taken: set[str]) -> str:
+    """``base``, or its first free numbered variant: two unnamed presets are two presets."""
+    if base.casefold() not in taken:
+        return base
+    return next(f"{base} {i}" for i in count(2) if f"{base} {i}".casefold() not in taken)
 
 
 def migrate_gear_presets(repo) -> None:
     """Write every gear preset to the metadata preset store, once."""
     if repo.get_global_setting(_DONE_FLAG):
         return
+    unstored = False
     try:
         bundled_ok, bundled = _read_presets(os.path.join(get_resource_path("gear"), _GEAR_PRESETS_FILE))
         user_ok, user = _read_presets(os.path.join(APP_CONFIG.gear_dir, _GEAR_PRESETS_FILE))
@@ -71,7 +82,9 @@ def migrate_gear_presets(repo) -> None:
         existing = {n.casefold() for n in MetadataPresets.list_presets()}
         for preset in presets:
             name = _safe_name(str(preset.get("displayName") or preset.get("display_name") or ""))
-            if not name or name.casefold() in existing:
+            if not name:
+                name = _unique_name(_UNNAMED, existing)
+            if name.casefold() in existing:
                 continue
             resolved = metadata_from_gear(
                 MetadataConfig(),
@@ -81,9 +94,16 @@ def migrate_gear_presets(repo) -> None:
                 film_stock_id=str(preset.get("filmStockId") or preset.get("film_stock_id") or ""),
             )
             fields = {f: getattr(resolved, f) for f in GEAR_FIELDS}
-            MetadataPresets.save_preset(name, with_preset_notes(fields, str(preset.get("notes") or "")))
+            try:
+                MetadataPresets.save_preset(name, with_preset_notes(fields, str(preset.get("notes") or "")))
+            except (OSError, ValueError) as e:
+                # One preset the store refuses must not strand every preset after it.
+                logger.warning("Gear preset %r not converted: %s", name, e)
+                unstored = True
+                continue
             existing.add(name.casefold())
     except Exception as e:  # startup must survive a broken gear file
         logger.warning("Gear preset migration skipped: %s", e)
         return
-    repo.save_global_setting(_DONE_FLAG, True)
+    if not unstored:
+        repo.save_global_setting(_DONE_FLAG, True)

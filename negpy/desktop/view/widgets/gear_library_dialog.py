@@ -51,7 +51,7 @@ from negpy.features.metadata.gear_models import (
     Lens,
     ScanSetup,
 )
-from negpy.features.metadata.models import FORMAT_OPTIONS, PUSH_PULL_LABELS, PUSH_PULL_VALUES
+from negpy.features.metadata.models import FORMAT_OPTIONS, PUSH_PULL_LABELS, PUSH_PULL_VALUES, format_label, format_value
 from negpy.desktop.view.widgets.searchable_gear_combo import SearchableGearCombo
 from negpy.services.assets.gear import GearProfiles
 from negpy.services.assets.presets import MetadataPresets, is_valid_preset_name, preset_fields, preset_notes, with_preset_notes
@@ -590,7 +590,7 @@ class GearLibraryDialog(QDialog):
             self.preset_film_combo.set_gear_items(self._library.film_stocks, meta.film_stock_id, lambda f: f.resolved_display_name)
             self.preset_process_combo.set_gear_items(self._library.processes, meta.process_id, lambda p: p.resolved_display_name)
             self.preset_scan_combo.set_gear_items(self._library.scan_setups, meta.scanning_id, lambda x: x.resolved_display_name)
-            self.preset_format_combo.setCurrentText(meta.format if meta.format in FORMAT_OPTIONS else "Other")
+            self.preset_format_combo.setCurrentText(format_label(meta.format))
             self.preset_format_other_edit.setText(meta.format_other)
             self.preset_developer_edit.setText(meta.developer)
             self.preset_dilution_edit.setText(meta.process_dilution)
@@ -680,7 +680,7 @@ class GearLibraryDialog(QDialog):
         meta = None if self._updating else self._preset_meta()
         if meta is None:
             return
-        fmt = self.preset_format_combo.currentText()
+        fmt = format_value(self.preset_format_combo.currentText())
         if "format_other" in self._preset_rows and self._preset_rows["format"][1].isVisibleTo(self.preset_panel):
             other_label, other_widget = self._preset_rows["format_other"]
             other_label.setVisible(fmt == "Other")

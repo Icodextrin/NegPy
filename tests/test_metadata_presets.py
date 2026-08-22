@@ -465,8 +465,9 @@ class TestDilution:
 
         assert payload.dilution == "1+1"
         assert payload.developer_display() == "D-76 1+1"
+        # The joined form is for the prose description; the table gives the dilution its own row.
         rows = dict(next(rows for title, rows in payload.to_preview_sections() if title == "Process"))
-        assert rows["Developer"] == "D-76 1+1"
+        assert rows["Developer"] == "D-76"
 
 
 class TestReviewFixes:
@@ -898,3 +899,108 @@ class TestEditingPresetValuesInTheLibrary:
 
         assert MetadataPresets.load_preset("Dev")["process_time_seconds"] == 390
         assert dlg.preset_time_edit.styleSheet() != ""
+
+
+class TestMigrationNaming:
+    """A name the store cannot take costs that one preset, never the presets after it."""
+
+    @pytest.fixture
+    def sources(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        os.makedirs(APP_CONFIG.gear_dir, exist_ok=True)
+        monkeypatch.setattr(gear_preset_migration.GearProfiles, "load_library", staticmethod(GearLibrary))
+        monkeypatch.setattr(gear_preset_migration, "get_resource_path", lambda _p: str(tmp_path / "bundled"))
+
+        def write(presets):
+            with open(os.path.join(APP_CONFIG.gear_dir, "gear_presets.json"), "w", encoding="utf-8") as f:
+                json.dump(presets, f)
+
+        return write
+
+    @pytest.mark.parametrize("display", ["Nikon F2.", ".portra", "...", "Two\nlines"])
+    def test_an_awkward_name_does_not_strand_the_next_preset(self, sources, display):
+        sources(
+            [
+                {"id": "p1", "displayName": display, "cameraId": "c1"},
+                {"id": "p2", "displayName": "Later preset", "cameraId": "c1"},
+            ]
+        )
+        repo = _FakeRepo()
+
+        migrate_gear_presets(repo)
+
+        # Whatever the first one is called, the one after it is never lost.
+        assert "Later preset" in MetadataPresets.list_presets()
+        assert len(MetadataPresets.list_presets()) == 2
+        assert repo.get_global_setting("gear_presets_migrated") is True
+
+    def test_a_separator_leaves_one_space_not_three(self, sources):
+        sources([{"id": "p1", "displayName": "AE-1P / FD 50 f/1.4 / Portra 400"}])
+
+        migrate_gear_presets(_FakeRepo())
+
+        assert MetadataPresets.list_presets() == ["AE-1P FD 50 f 1.4 Portra 400"]
+
+    def test_unnamed_presets_are_kept_and_numbered(self, sources):
+        sources([{"id": "p1", "cameraId": "c1"}, {"id": "p2", "cameraId": "c2"}])
+
+        migrate_gear_presets(_FakeRepo())
+
+        assert sorted(MetadataPresets.list_presets()) == ["Unnamed preset", "Unnamed preset 2"]
+
+    def test_a_refused_write_leaves_the_migration_pending(self, sources, monkeypatch):
+        sources([{"id": "p1", "displayName": "Kit", "cameraId": "c1"}])
+        monkeypatch.setattr(
+            gear_preset_migration.MetadataPresets,
+            "save_preset",
+            staticmethod(lambda *_a, **_k: (_ for _ in ()).throw(OSError("disk full"))),
+        )
+        repo = _FakeRepo()
+
+        migrate_gear_presets(repo)
+
+        assert repo.get_global_setting("gear_presets_migrated") is None
+
+
+class TestUnsetFormat:
+    """An unset format is a row of its own, and must not read back as "Other"."""
+
+    def test_the_panel_leaves_an_unset_format_alone(self, sidebar: MetadataSidebar) -> None:
+        assert sidebar.state.config.metadata.format == ""
+
+        sidebar.capture_roll_edit.setText("Roll042")
+        sidebar._persist_all_metadata_settings()
+
+        assert sidebar.state.config.metadata.format == ""
+
+    def test_editing_a_preset_leaves_an_unset_format_alone(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        gear_row = [r for r in _metadata_rows() if r.label == "Gear"]
+        MetadataPresets.save_preset("Body only", selected_flat_dict(WorkspaceConfig(), gear_row))
+        assert MetadataPresets.load_preset("Body only")["format"] == ""
+
+        dlg = GearLibraryDialog(GearLibrary(cameras=[Camera(id="c1", make="Nikon", model="FM2")]))
+        dlg._select_category("metadata_presets")
+        dlg.item_list.setCurrentRow([dlg._item_label(i) for i in dlg._list_items].index("Body only"))
+
+        assert dlg.preset_format_combo.currentText() != "Other"
+        dlg._on_preset_value_changed()
+
+        assert MetadataPresets.load_preset("Body only")["format"] == ""
+
+    def test_a_real_format_still_round_trips(self, sidebar: MetadataSidebar) -> None:
+        sidebar.format_combo.setCurrentText("120")
+        sidebar._persist_all_metadata_settings()
+
+        assert sidebar.state.config.metadata.format == "120"
+
+
+class TestDeveloperNotes:
+    def test_the_dilution_is_not_printed_twice(self):
+        meta = replace(WorkspaceConfig().metadata, developer="D-76", process_dilution="1+50")
+        payload = build_metadata_payload(meta, GearLibrary(), None)
+
+        rows = dict(next(rows for title, rows in payload.to_preview_sections() if title == "Process"))
+
+        assert rows["Developer"] == "D-76"
+        assert rows["Dilution"] == "1+50"
