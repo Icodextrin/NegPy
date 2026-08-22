@@ -1004,3 +1004,29 @@ class TestDeveloperNotes:
 
         assert rows["Developer"] == "D-76"
         assert rows["Dilution"] == "1+50"
+
+
+class TestNewPresetWindow:
+    def test_it_lists_every_row_not_only_the_edited_ones(self, monkeypatch, tmp_path):
+        """A new preset is a choice of fields, so an unset one must be on offer too."""
+        monkeypatch.setattr(APP_CONFIG, "gear_dir", str(tmp_path / "gear"))
+        base = WorkspaceConfig()
+        cfg = replace(base, metadata=replace(base.metadata, developer="D-76"))
+        library = GearLibraryDialog(GearLibrary(), current_config=cfg)
+        library._select_category("metadata_presets")
+
+        captured = {}
+
+        def _capture(parent, config, name, **kwargs):
+            dlg = GranularSettingsDialog(parent, config, name, **kwargs)
+            captured["dlg"] = dlg
+            dlg.exec = lambda: QDialog.DialogCode.Rejected
+            return dlg
+
+        with patch("negpy.desktop.view.widgets.gear_library_dialog.GranularSettingsDialog", _capture):
+            library._add_item()
+
+        dlg = captured["dlg"]
+        assert dlg._show_unchanged.isChecked(), "the new-preset window lists every row"
+        # Revealed, not ticked: only what the frame actually sets arrives selected.
+        assert [r.label for r in dlg.selected()] == ["Process"]

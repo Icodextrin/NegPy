@@ -838,6 +838,8 @@ class GearLibraryDialog(QDialog):
             return
         dlg = GranularSettingsDialog(self, self._current_config, "current metadata", ask_name=True, exclude_sections=NON_METADATA_SECTIONS)
         dlg.setWindowTitle("New Metadata Preset")
+        # As when editing: which fields to store is the choice, so every row is on offer.
+        dlg.show_unchanged_settings()
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         name = dlg.name().strip()
