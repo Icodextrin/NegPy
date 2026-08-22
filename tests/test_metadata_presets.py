@@ -634,6 +634,7 @@ class TestSecondReviewRound:
             dialog._edit_preset()
 
         assert "Process" in [r.label for r in captured["dlg"].selected()]
+        assert captured["dlg"]._show_unchanged.isChecked(), "editing lists every row, not only edited ones"
         assert MetadataPresets.load_preset("Normal dev")["push_pull"] == 0
         assert MetadataPresets.load_preset("Normal dev")["developer"] == "D-76"
 

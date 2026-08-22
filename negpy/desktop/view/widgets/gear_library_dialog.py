@@ -856,6 +856,9 @@ class GearLibraryDialog(QDialog):
         dlg = GranularSettingsDialog(self, cfg, name, ask_name=True, exclude_sections=NON_METADATA_SECTIONS)
         dlg.setWindowTitle("Edit Metadata Preset")
         dlg.set_name(name)
+        # Editing is about which fields the preset holds, so show every row, default-valued
+        # ones included, rather than making the user reveal them to add one.
+        dlg.show_unchanged_settings()
         # What the preset stores, not what differs from default: a row deliberately holding
         # a default value would otherwise arrive unticked and be dropped on save.
         dlg.set_checked_rows(r.id for r in rows_for_keys(data, "metadata"))
